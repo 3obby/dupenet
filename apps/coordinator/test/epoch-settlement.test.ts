@@ -121,6 +121,10 @@ function createMockPrisma(store: MockStore) {
         return record;
       }),
     },
+    pinContract: {
+      findMany: vi.fn(async () => []), // no active pins in epoch-settlement tests
+      update: vi.fn(async () => ({})),
+    },
     event: {
       create: vi.fn(async ({ data }: { data: Record<string, unknown> }) => {
         const record = {

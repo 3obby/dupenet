@@ -37,6 +37,28 @@ export async function creditTip(
 }
 
 /**
+ * Credit a bounty pool directly (no protocol fee).
+ * Used by pin contracts — budget goes straight to pool.
+ */
+export async function creditBountyDirect(
+  prisma: PrismaClient,
+  cid: string,
+  amount: number,
+): Promise<void> {
+  await prisma.bountyPool.upsert({
+    where: { cid },
+    create: {
+      cid,
+      balance: BigInt(amount),
+      totalTipped: 0n,
+    },
+    update: {
+      balance: { increment: BigInt(amount) },
+    },
+  });
+}
+
+/**
  * Debit a payout from a bounty pool.
  */
 export async function debitPayout(

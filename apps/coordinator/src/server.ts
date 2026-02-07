@@ -13,8 +13,9 @@
  *   POST /receipt/submit  — submit receipts for epoch
  *   POST /epoch/settle   — settle a completed epoch (aggregation + payouts)
  *   GET  /epoch/summary/:epoch — get settlement results for an epoch
- *   POST /pin            — create pin contract (stub)
- *   GET  /pin/:id        — pin status (stub)
+ *   POST /pin            — create pin contract
+ *   GET  /pin/:id        — pin status + active hosts + epoch proofs
+ *   POST /pin/:id/cancel — cancel pin, return remaining budget minus fee
  *   GET  /health         — health check (verifies DB connectivity)
  */
 
@@ -34,6 +35,13 @@ import {
 import { currentEpoch } from "@dupenet/physics";
 import { verifyReceiptV2, type ReceiptV2Input } from "@dupenet/receipt-sdk";
 import { settleEpoch } from "./views/epoch-settlement.js";
+import {
+  createPin,
+  getPinStatus,
+  cancelPin,
+  validatePinInput,
+  type CreatePinInput,
+} from "./views/pin-contracts.js";
 
 export interface CoordinatorDeps {
   prisma?: PrismaClient;
@@ -250,16 +258,48 @@ export async function buildApp(deps?: CoordinatorDeps) {
     },
   );
 
-  // ── Pin (stub) ─────────────────────────────────────────────────
-  app.post("/pin", async (_req, reply) => {
-    // TODO: Sprint 5 — pin contract lifecycle
-    return reply.send({ ok: true, message: "pin contract stub" });
+  // ── Pin contracts ───────────────────────────────────────────────
+  app.post("/pin", async (req, reply) => {
+    const input = req.body as CreatePinInput;
+
+    const validation = validatePinInput(input);
+    if (!validation.valid) {
+      return reply.status(422).send({ error: "invalid_pin", detail: validation.error });
+    }
+
+    try {
+      const pin = await createPin(prisma, input);
+      return reply.status(201).send({ ok: true, pin });
+    } catch (err: unknown) {
+      // Duplicate pin ID (same content hashed to same ID)
+      if (err instanceof Error && err.message.includes("Unique constraint")) {
+        return reply.status(409).send({ error: "duplicate_pin" });
+      }
+      throw err;
+    }
   });
 
   app.get<{ Params: { id: string } }>(
     "/pin/:id",
-    async (_req, reply) => {
-      return reply.status(404).send({ error: "not_implemented" });
+    async (req, reply) => {
+      const status = await getPinStatus(prisma, req.params.id);
+      if (!status) {
+        return reply.status(404).send({ error: "pin_not_found" });
+      }
+      return reply.send(status);
+    },
+  );
+
+  app.post<{ Params: { id: string } }>(
+    "/pin/:id/cancel",
+    async (req, reply) => {
+      const { sig } = (req.body as { sig?: string }) ?? {};
+      const result = await cancelPin(prisma, req.params.id, sig ?? "");
+      if ("error" in result) {
+        const status = result.error === "pin_not_found" ? 404 : 422;
+        return reply.status(status).send(result);
+      }
+      return reply.send({ ok: true, ...result });
     },
   );
 

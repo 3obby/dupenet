@@ -21,6 +21,7 @@ import {
   AGGREGATOR_FEE_PCT,
 } from "@dupenet/physics";
 import { debitPayout, getPool } from "./bounty-pool.js";
+import { drainPinBudgets } from "./pin-contracts.js";
 import { appendEvent } from "../event-log/writer.js";
 import { EPOCH_SUMMARY_EVENT } from "../event-log/schemas.js";
 
@@ -200,6 +201,8 @@ export async function settleEpoch(
     const actualDrain = Math.min(totalDrain, bountyBalance);
     if (actualDrain > 0) {
       await debitPayout(prisma, cid, actualDrain, epoch);
+      // Update active pin contracts' remaining budgets
+      await drainPinBudgets(prisma, cid, actualDrain);
     }
 
     // Record per-host results

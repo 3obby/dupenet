@@ -74,14 +74,16 @@ PHASE 1: BLOB UTILITY (Layer A)
 ## Step 5 — Pin Contracts
 
 [x] PinContractV1 schema               TypeBox schema (physics) + Prisma model
-[ ] POST /pin                           stub: returns {ok: true, message: "stub"}
-[ ] GET /pin/:id                        returns 404 not_implemented
-[ ] pin_cancel                          not implemented
-[ ] Drain rate enforcement              budget_sats / duration_epochs — not wired
-[ ] Budget management                   no top-up or debit logic
-[ ] Lifecycle transitions               ACTIVE -> EXHAUSTED/CANCELLED not enforced
-[ ] min_copies enforcement              not implemented
-[ ] Epoch proof bundle                  filtered EpochSummary for pinned asset — not implemented
+[x] POST /pin                           creates pin, computes drain_rate, credits bounty pool, logs event
+[x] GET /pin/:id                        returns status, remaining budget, active hosts, copies_met, epoch proofs
+[x] POST /pin/:id/cancel               returns remaining budget minus 5% fee, status -> CANCELLED
+[x] Drain rate enforcement              drainPinBudgets() deducts min(actualDrain, drainRate) per epoch
+[x] Budget management                   creditBountyDirect (no protocol fee); debitPayout on cancel refund
+[x] Lifecycle transitions               ACTIVE -> EXHAUSTED (when remainingBudget=0); ACTIVE -> CANCELLED (on cancel)
+[x] min_copies check                    getPinStatus compares active hosts vs min_copies, returns copies_met
+[x] Epoch proof bundle                  getPinStatus returns recent EpochSummaryRecords for pinned asset (last 6 epochs)
+[x] Pin contract tests                  22 tests: validation, create, status, cancel, drain rate, exhaustion
+[x] Pin ID deterministic                SHA256(canonical(pin content)) — duplicate detection via unique constraint
 
 COORDINATOR — PERSISTENCE + AGGREGATION
 -----------------------------------------
@@ -119,6 +121,7 @@ INTEGRATION / E2E
 [ ] Docker E2E                          compose up -> upload -> tip -> host mirrors -> L402 fetch -> receipt -> payout
 [x] Receipt round-trip test             construct valid receipt (PoW + mint sig + client sig) -> verifyReceiptV2 passes
 [x] Epoch settlement test              mock Prisma: eligible/ineligible hosts, bounty drain, idempotency, score split
+[x] Pin contract test                  mock Prisma: create/status/cancel, drain rate, exhaustion, validation (22 tests)
 
 SPRINT ORDER (recommended)
 ---------------------------
@@ -128,7 +131,7 @@ SPRINT ORDER (recommended)
 3. Coordinator -> Postgres              DONE (tsc clean; requires `prisma db push` + Postgres to run)
 4a. Receipt submission + validation     DONE (receipt-sdk e2e test passes; coordinator handler typechecks)
 4b. Epoch aggregation + payout          DONE (20 new tests: 12 physics + 8 coordinator; bounty drains correctly)
-5. Pin contracts lifecycle              requires: 4b. exit: create pin, drain rate enforced, cancel returns budget
+5. Pin contracts lifecycle              DONE (22 new tests; create, cancel, drain rate, exhaustion all work)
 6. Docker E2E                           requires: all above. exit: full compose flow works end-to-end
 
 LEGEND: [x] done  [~] partial/stub  [ ] not started
