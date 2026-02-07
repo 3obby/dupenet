@@ -17,4 +17,8 @@ export const config = {
     .split(",")
     .map((s) => s.trim())
     .filter((s) => s.length > 0),
+  /** Epoch scheduler check interval (ms). 0 = disabled. Default: 60000. */
+  epochSchedulerIntervalMs: parseInt(env("EPOCH_SCHEDULER_INTERVAL_MS", "60000"), 10),
+  /** Run spot-checks after epoch settlement. Default: true. */
+  epochSchedulerSpotChecks: env("EPOCH_SCHEDULER_SPOT_CHECKS", "true") === "true",
 } as const;

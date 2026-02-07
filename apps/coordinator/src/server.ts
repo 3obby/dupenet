@@ -466,10 +466,41 @@ if (
   resolve(process.argv[1]) === fileURLToPath(import.meta.url)
 ) {
   const app = await buildApp();
+
   app.listen({ port: config.port, host: config.host }, (err) => {
     if (err) {
       app.log.error(err);
       process.exit(1);
     }
   });
+
+  // Start epoch scheduler (unless disabled)
+  if (config.epochSchedulerIntervalMs > 0) {
+    const { createEpochScheduler } = await import("./scheduler.js");
+    const prisma = new PrismaClient();
+    const scheduler = createEpochScheduler(prisma, {
+      checkIntervalMs: config.epochSchedulerIntervalMs,
+      runSpotChecks: config.epochSchedulerSpotChecks,
+      onSettle: (result) => {
+        app.log.info(
+          { epoch: result.epoch, paid: result.totalPaidSats, groups: result.totalGroups },
+          "epoch settled by scheduler",
+        );
+      },
+      onError: (err) => {
+        app.log.error({ err }, "scheduler error");
+      },
+    });
+    scheduler.start();
+    app.log.info(
+      { intervalMs: config.epochSchedulerIntervalMs },
+      "epoch scheduler started",
+    );
+
+    // Stop scheduler on shutdown
+    app.addHook("onClose", async () => {
+      scheduler.stop();
+      await prisma.$disconnect();
+    });
+  }
 }

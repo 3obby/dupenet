@@ -115,7 +115,7 @@ COORDINATOR — PERSISTENCE + AGGREGATION
 [x] Bounty drain                        cidEpochCap() limits per-epoch drain, debitPayout() debits pool
 [x] Aggregator fee                      3% deducted from cap before host distribution
 [x] Epoch settlement tests              8 coordinator tests (mock Prisma) + 12 physics aggregation tests
-[~] Epoch boundary trigger              POST /epoch/settle (manual or cron); no built-in scheduler yet
+[x] Epoch boundary trigger              createEpochScheduler() auto-settles closed epochs; configurable interval + spot-checks
 [x] Signature verification on events    Ed25519 verify on POST /tip and POST /host/register; rejects forged/missing sigs
 
 INTEGRATION / E2E
@@ -131,6 +131,7 @@ INTEGRATION / E2E
 [x] Event signature test               real Ed25519 keypairs: signed tip/register accepted, forged/missing rejected (7 tests)
 [x] Bounty feed + host/serve test     bounty feed returns profitable CIDs; signed serve announcements (6 tests)
 [x] Node-agent poll cycle test        mock fetch: discover, mirror, error handling (6 tests)
+[x] Epoch scheduler test             mock Prisma: tick settles, idempotent, start/stop, error handling (7 tests)
 
 SPRINT ORDER (recommended)
 ---------------------------
