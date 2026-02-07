@@ -481,18 +481,11 @@ if (
 
   const app = await buildApp();
 
-  app.listen({ port: config.port, host: config.host }, (err) => {
-    if (err) {
-      app.log.error(err);
-      process.exit(1);
-    }
-  });
-
-  // Start epoch scheduler (unless disabled)
+  // Start epoch scheduler BEFORE listen (Fastify 5 forbids addHook after listen)
   if (config.epochSchedulerIntervalMs > 0) {
     const { createEpochScheduler } = await import("./scheduler.js");
-    const prisma = new PrismaClient();
-    const scheduler = createEpochScheduler(prisma, {
+    const schedulerPrisma = new PrismaClient();
+    const scheduler = createEpochScheduler(schedulerPrisma, {
       checkIntervalMs: config.epochSchedulerIntervalMs,
       runSpotChecks: config.epochSchedulerSpotChecks,
       onSettle: (result) => {
@@ -505,16 +498,24 @@ if (
         app.log.error({ err }, "scheduler error");
       },
     });
+
+    // Register shutdown hook before listen
+    app.addHook("onClose", async () => {
+      scheduler.stop();
+      await schedulerPrisma.$disconnect();
+    });
+
     scheduler.start();
     app.log.info(
       { intervalMs: config.epochSchedulerIntervalMs },
       "epoch scheduler started",
     );
-
-    // Stop scheduler on shutdown
-    app.addHook("onClose", async () => {
-      scheduler.stop();
-      await prisma.$disconnect();
-    });
   }
+
+  app.listen({ port: config.port, host: config.host }, (err) => {
+    if (err) {
+      app.log.error(err);
+      process.exit(1);
+    }
+  });
 }

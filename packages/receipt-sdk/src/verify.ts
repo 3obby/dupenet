@@ -54,9 +54,17 @@ function uint64BE(n: bigint): Uint8Array {
   return buf;
 }
 
+// Web Crypto type bridge (see ed25519.ts for explanation)
+function wcBuf(data: Uint8Array): ArrayBuffer {
+  if (data.byteOffset === 0 && data.byteLength === data.buffer.byteLength) {
+    return data.buffer as ArrayBuffer;
+  }
+  return data.slice().buffer as ArrayBuffer;
+}
+
 /** SHA-256 via SubtleCrypto (available everywhere). */
 async function sha256(data: Uint8Array): Promise<Uint8Array> {
-  const hash = await crypto.subtle.digest("SHA-256", data);
+  const hash = await crypto.subtle.digest("SHA-256", wcBuf(data));
   return new Uint8Array(hash);
 }
 

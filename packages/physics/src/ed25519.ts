@@ -41,6 +41,17 @@ export async function generateKeypair(): Promise<{
   return { publicKey: pubRaw, privateKey: privRaw };
 }
 
+// Web Crypto accepts Uint8Array at runtime, but @types/node >= 22 is overly
+// strict about ArrayBufferLike vs ArrayBuffer. This helper bridges the gap.
+// Note: cbor-x returns Node Buffer (whose .slice() returns a view, not a copy).
+// Always use `new Uint8Array(data)` for a guaranteed fresh ArrayBuffer.
+function wcBuf(data: Uint8Array): ArrayBuffer {
+  if (data.byteOffset === 0 && data.byteLength === data.buffer.byteLength) {
+    return data.buffer as ArrayBuffer;
+  }
+  return new Uint8Array(data).buffer as ArrayBuffer;
+}
+
 // ── Signing ────────────────────────────────────────────────────────
 
 /**
@@ -55,13 +66,13 @@ export async function ed25519Sign(
   const pkcs8 = buildPkcs8(privateKey);
   const key = await crypto.subtle.importKey(
     "pkcs8",
-    pkcs8,
+    wcBuf(pkcs8),
     { name: "Ed25519" },
     false,
     ["sign"],
   );
 
-  const sig = await crypto.subtle.sign("Ed25519", key, message);
+  const sig = await crypto.subtle.sign("Ed25519", key, wcBuf(message));
   return new Uint8Array(sig);
 }
 
@@ -83,13 +94,13 @@ export async function ed25519Verify(
   try {
     const key = await crypto.subtle.importKey(
       "raw",
-      publicKey,
+      wcBuf(publicKey),
       { name: "Ed25519" },
       false,
       ["verify"],
     );
 
-    return await crypto.subtle.verify("Ed25519", key, signature, message);
+    return await crypto.subtle.verify("Ed25519", key, wcBuf(signature), wcBuf(message));
   } catch {
     return false;
   }

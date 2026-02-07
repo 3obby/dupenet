@@ -9,8 +9,21 @@
  * No DB. No business logic beyond "sign this payload."
  */
 
-import { sign, getPublicKey } from "@noble/ed25519";
+import { sign, getPublicKey, etc } from "@noble/ed25519";
+import { sha512 } from "@noble/hashes/sha512";
 import { fromHex, toHex, type CID } from "@dupenet/physics";
+
+// @noble/ed25519 requires a SHA-512 implementation to be configured
+etc.sha512Sync = (...msgs: Uint8Array[]) => {
+  const h = sha512.create();
+  for (const m of msgs) h.update(m);
+  return h.digest();
+};
+etc.sha512Async = async (...msgs: Uint8Array[]) => {
+  const h = sha512.create();
+  for (const m of msgs) h.update(m);
+  return h.digest();
+};
 
 export class ReceiptSigner {
   private readonly privateKey: Uint8Array;

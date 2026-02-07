@@ -10,7 +10,7 @@
 services:
   # ── Bitcoin (regtest) ──────────────────────────────────────────
   bitcoind:
-    image: ruimarinho/bitcoin-core:26
+    image: ruimarinho/bitcoin-core:23
     command: >
       bitcoind -regtest=1 -server=1 -txindex=1
       -rpcbind=0.0.0.0 -rpcallowip=0.0.0.0/0
