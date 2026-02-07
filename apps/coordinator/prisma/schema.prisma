@@ -82,6 +82,28 @@ model EpochSummaryRecord {
   @@map("epoch_summary")
 }
 
+model Receipt {
+  id            Int      @id @default(autoincrement())
+  epoch         Int
+  hostPubkey    String
+  blockCid      String
+  fileRoot      String
+  assetRoot     String?
+  clientPubkey  String
+  paymentHash   String   @unique // single-use: replay prevention
+  responseHash  String
+  priceSats     Int
+  powHash       String
+  nonce         BigInt
+  receiptToken  String
+  clientSig     String
+  createdAt     DateTime @default(now())
+
+  @@index([epoch, hostPubkey])
+  @@index([epoch, clientPubkey])
+  @@map("receipt")
+}
+
 model PinContract {
   id             String @id
   client         String

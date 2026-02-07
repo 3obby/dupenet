@@ -24,8 +24,13 @@ import { config } from "./config.js";
 import { creditTip, getPool } from "./views/bounty-pool.js";
 import { registerHost, getAllHosts } from "./views/host-registry.js";
 import { appendEvent, getEventCount } from "./event-log/writer.js";
-import { TIP_EVENT, HOST_REGISTER_EVENT } from "./event-log/schemas.js";
+import {
+  TIP_EVENT,
+  HOST_REGISTER_EVENT,
+  RECEIPT_SUBMIT_EVENT,
+} from "./event-log/schemas.js";
 import { currentEpoch } from "@dupenet/physics";
+import { verifyReceiptV2, type ReceiptV2Input } from "@dupenet/receipt-sdk";
 
 export interface CoordinatorDeps {
   prisma?: PrismaClient;
@@ -117,10 +122,76 @@ export async function buildApp(deps?: CoordinatorDeps) {
     return reply.send({ hosts, timestamp: Date.now() });
   });
 
-  // ── Receipts (stub) ────────────────────────────────────────────
-  app.post("/receipt/submit", async (_req, reply) => {
-    // TODO: Sprint 4a — receipt aggregation
-    return reply.send({ ok: true, message: "receipt submission stub" });
+  // ── Receipt submission ──────────────────────────────────────────
+  app.post("/receipt/submit", async (req, reply) => {
+    const receipt = req.body as ReceiptV2Input & { version: number };
+
+    // 1. Validate with receipt-sdk (checks client_sig, pow, receipt_token)
+    if (config.mintPubkeys.length === 0) {
+      return reply
+        .status(503)
+        .send({ error: "no_mint_pubkeys_configured" });
+    }
+
+    const result = await verifyReceiptV2(receipt, config.mintPubkeys);
+    if (!result.valid) {
+      return reply
+        .status(422)
+        .send({ error: "invalid_receipt", detail: result.error });
+    }
+
+    // 2. Check epoch is current or recent (within last 2 epochs)
+    const current = currentEpoch();
+    if (receipt.epoch > current || receipt.epoch < current - 2) {
+      return reply.status(422).send({
+        error: "epoch_out_of_range",
+        current,
+        receipt_epoch: receipt.epoch,
+      });
+    }
+
+    // 3. Replay prevention: payment_hash must be unique
+    const existing = await prisma.receipt.findUnique({
+      where: { paymentHash: receipt.payment_hash },
+    });
+    if (existing) {
+      return reply.status(409).send({ error: "duplicate_receipt" });
+    }
+
+    // 4. Store valid receipt
+    await prisma.receipt.create({
+      data: {
+        epoch: receipt.epoch,
+        hostPubkey: receipt.host_pubkey,
+        blockCid: receipt.block_cid,
+        fileRoot: receipt.file_root,
+        assetRoot: receipt.asset_root ?? null,
+        clientPubkey: receipt.client_pubkey,
+        paymentHash: receipt.payment_hash,
+        responseHash: receipt.response_hash,
+        priceSats: receipt.price_sats,
+        powHash: receipt.pow_hash,
+        nonce: BigInt(receipt.nonce),
+        receiptToken: receipt.receipt_token,
+        clientSig: receipt.client_sig,
+      },
+    });
+
+    // 5. Log event
+    await appendEvent(prisma, {
+      type: RECEIPT_SUBMIT_EVENT,
+      timestamp: Date.now(),
+      signer: receipt.client_pubkey,
+      sig: receipt.client_sig,
+      payload: {
+        payment_hash: receipt.payment_hash,
+        epoch: receipt.epoch,
+        host_pubkey: receipt.host_pubkey,
+        block_cid: receipt.block_cid,
+      },
+    });
+
+    return reply.send({ ok: true });
   });
 
   // ── Pin (stub) ─────────────────────────────────────────────────

@@ -43,7 +43,7 @@ PHASE 1: BLOB UTILITY (Layer A)
 [x] Mint HTTP client                  gateway calls POST /sign on mint, receives receipt_token
 [x] min_request_sats enforcement      price = min_request_sats used for all block fetches
 [x] L402 integration tests            8 tests: 402 challenge, paid fetch, invalid/unknown/mismatch/single-use (mock LND)
-[ ] Client PoW receipt minting        H(challenge || nonce) < TARGET — not implemented
+[x] Client PoW receipt minting        minePoW(), buildChallengeRaw/ClientSigPayload/TokenPayload in physics
 [ ] Block selection (anti-special)    PRF(epoch_seed || file_root || client) mod num_blocks — not implemented
 
 ## Step 3 — Node Kit + Host Registration
@@ -69,7 +69,7 @@ PHASE 1: BLOB UTILITY (Layer A)
 [x] PoW hash check                     H(challenge || nonce) < TARGET validation
 [x] Client signature check             Ed25519 sig over receipt payload
 [x] Zero external dependencies         only crypto.subtle
-[~] Test vectors                       verify.test.ts covers invalid hex/PoW/token; missing: valid e2e, forged, expired
+[x] Test vectors                       valid e2e receipt (construct -> verify), invalid hex/PoW/token, wrong mint key (7 tests)
 
 ## Step 5 — Pin Contracts
 
@@ -98,8 +98,8 @@ COORDINATOR — PERSISTENCE + AGGREGATION
 [x] EpochSummary schema                defined in physics
 [x] Coordinator -> Postgres             bounty-pool, host-registry, event-log all use PrismaClient (tsc clean)
 [x] Event log persistence               append-only Postgres via prisma.event.create
-[ ] POST /receipt/submit                stub: returns {ok: true, message: "stub"}
-[ ] Receipt validation pipeline         verify receipt_token, client_sig, PoW — not wired
+[x] POST /receipt/submit                validates via receipt-sdk, checks epoch range + replay, stores in Prisma
+[x] Receipt validation pipeline         verifyReceiptV2 checks client_sig, PoW, receipt_token against mint pubkeys
 [ ] Epoch boundary trigger              no cron/scheduler
 [ ] Payout execution                    distributeRewards() exists but not called anywhere
 [ ] Bounty drain                        EPOCH_REWARD_PCT drain per epoch — not implemented
@@ -112,7 +112,7 @@ INTEGRATION / E2E
 [x] Gateway round-trip test             upload multi-block file, retrieve by asset_root, verify SHA256 (7 tests)
 [x] L402 flow test                      402 -> pay invoice -> receive block + receipt_token (8 tests, mock LND)
 [ ] Docker E2E                          compose up -> upload -> tip -> host mirrors -> L402 fetch -> receipt -> payout
-[ ] Receipt round-trip test             L402 pay -> mint signs -> client mints PoW receipt -> submit -> validate
+[x] Receipt round-trip test             construct valid receipt (PoW + mint sig + client sig) -> verifyReceiptV2 passes
 
 SPRINT ORDER (recommended)
 ---------------------------
@@ -120,7 +120,7 @@ SPRINT ORDER (recommended)
 1. Gateway integration tests            DONE (7 tests pass)
 2. L402 + mint settlement               DONE (8 tests pass, mock LND; Docker E2E with real LND in sprint 6)
 3. Coordinator -> Postgres              DONE (tsc clean; requires `prisma db push` + Postgres to run)
-4a. Receipt submission + validation     requires: sprints 2+3. exit: POST /receipt/submit validates real receipts
+4a. Receipt submission + validation     DONE (receipt-sdk e2e test passes; coordinator handler typechecks)
 4b. Epoch aggregation + payout          requires: 4a. exit: epoch boundary triggers payout, bounty drains
 5. Pin contracts lifecycle              requires: 4b. exit: create pin, drain rate enforced, cancel returns budget
 6. Docker E2E                           requires: all above. exit: full compose flow works end-to-end

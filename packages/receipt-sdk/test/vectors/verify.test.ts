@@ -109,3 +109,178 @@ describe("ed25519Verify", () => {
     expect(valid).toBe(false);
   });
 });
+
+// ── Full round-trip: construct valid receipt → verify passes ───────
+
+describe("verifyReceiptV2 end-to-end", () => {
+  // Web Crypto Ed25519 helpers (zero deps)
+  async function generateKeypair() {
+    const keys = await crypto.subtle.generateKey("Ed25519", true, [
+      "sign",
+      "verify",
+    ]);
+    const pubRaw = new Uint8Array(
+      await crypto.subtle.exportKey("raw", keys.publicKey),
+    );
+    const pubHex = bytesToHex(pubRaw);
+    return { privateKey: keys.privateKey, publicKeyHex: pubHex };
+  }
+
+  async function ed25519Sign(
+    privateKey: CryptoKey,
+    message: Uint8Array,
+  ): Promise<Uint8Array> {
+    return new Uint8Array(
+      await crypto.subtle.sign("Ed25519", privateKey, message),
+    );
+  }
+
+  function bytesToHex(bytes: Uint8Array): string {
+    let hex = "";
+    for (const b of bytes) hex += b.toString(16).padStart(2, "0");
+    return hex;
+  }
+
+  function bytesToBase64(bytes: Uint8Array): string {
+    return Buffer.from(bytes).toString("base64");
+  }
+
+  it("accepts a properly constructed receipt", async () => {
+    // Import physics primitives (devDep)
+    const {
+      buildChallengeRaw,
+      buildChallenge,
+      buildTokenPayload,
+      buildClientSigPayload,
+      computePowHash,
+      getTarget,
+      minePoW,
+    } = await import("@dupenet/physics");
+
+    // 1. Generate keypairs
+    const mintKeys = await generateKeypair();
+    const clientKeys = await generateKeypair();
+
+    // 2. Set up receipt fields
+    const fields = {
+      asset_root: "aa".repeat(32),
+      file_root: "bb".repeat(32),
+      block_cid: "cc".repeat(32),
+      host_pubkey: "dd".repeat(32),
+      payment_hash: "ee".repeat(32),
+      response_hash: "cc".repeat(32), // honest host: response_hash == block_cid
+      epoch: 42,
+      client_pubkey: clientKeys.publicKeyHex,
+    };
+
+    // 3. Build + sign receipt token (mint signs)
+    const tokenPayload = buildTokenPayload({
+      host_pubkey: fields.host_pubkey,
+      epoch: fields.epoch,
+      block_cid: fields.block_cid,
+      response_hash: fields.response_hash,
+      price_sats: 3,
+      payment_hash: fields.payment_hash,
+    });
+    const mintSig = await ed25519Sign(mintKeys.privateKey, tokenPayload);
+    const receiptToken = bytesToBase64(mintSig);
+
+    // 4. Mine PoW
+    const challenge = buildChallenge(fields);
+    const target = getTarget(0); // first receipt = base difficulty
+    const { nonce, powHash } = minePoW(challenge, target);
+
+    // 5. Build + sign client signature
+    const challengeRaw = buildChallengeRaw(fields);
+    const clientSigPayload = buildClientSigPayload(
+      challengeRaw,
+      nonce,
+      powHash,
+    );
+    const clientSig = await ed25519Sign(
+      clientKeys.privateKey,
+      clientSigPayload,
+    );
+
+    // 6. Assemble receipt
+    const receipt = {
+      ...fields,
+      price_sats: 3,
+      receipt_token: receiptToken,
+      nonce: Number(nonce),
+      pow_hash: powHash,
+      client_sig: bytesToBase64(clientSig),
+    };
+
+    // 7. Verify!
+    const result = await verifyReceiptV2(receipt, [mintKeys.publicKeyHex]);
+
+    expect(result).toEqual({ valid: true });
+  });
+
+  it("rejects receipt with wrong mint key", async () => {
+    const {
+      buildChallengeRaw,
+      buildChallenge,
+      buildTokenPayload,
+      buildClientSigPayload,
+      getTarget,
+      minePoW,
+    } = await import("@dupenet/physics");
+
+    const mintKeys = await generateKeypair();
+    const wrongMint = await generateKeypair();
+    const clientKeys = await generateKeypair();
+
+    const fields = {
+      file_root: "aa".repeat(32),
+      block_cid: "bb".repeat(32),
+      host_pubkey: "cc".repeat(32),
+      payment_hash: "dd".repeat(32),
+      response_hash: "bb".repeat(32),
+      epoch: 1,
+      client_pubkey: clientKeys.publicKeyHex,
+    };
+
+    // Sign with mintKeys, but verify against wrongMint
+    const tokenPayload = buildTokenPayload({
+      host_pubkey: fields.host_pubkey,
+      epoch: fields.epoch,
+      block_cid: fields.block_cid,
+      response_hash: fields.response_hash,
+      price_sats: 3,
+      payment_hash: fields.payment_hash,
+    });
+    const mintSig = await ed25519Sign(mintKeys.privateKey, tokenPayload);
+
+    const challenge = buildChallenge(fields);
+    const { nonce, powHash } = minePoW(challenge, getTarget(0));
+
+    const challengeRaw = buildChallengeRaw(fields);
+    const clientSigPayload = buildClientSigPayload(
+      challengeRaw,
+      nonce,
+      powHash,
+    );
+    const clientSig = await ed25519Sign(
+      clientKeys.privateKey,
+      clientSigPayload,
+    );
+
+    const receipt = {
+      ...fields,
+      price_sats: 3,
+      receipt_token: bytesToBase64(mintSig),
+      nonce: Number(nonce),
+      pow_hash: powHash,
+      client_sig: bytesToBase64(clientSig),
+    };
+
+    // Verify against wrong mint → should fail
+    const result = await verifyReceiptV2(receipt, [
+      wrongMint.publicKeyHex,
+    ]);
+    expect(result.valid).toBe(false);
+    expect(result.error).toBe("token_invalid");
+  });
+});

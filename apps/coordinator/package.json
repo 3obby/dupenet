@@ -18,6 +18,7 @@
   },
   "dependencies": {
     "@dupenet/physics": "*",
+    "@dupenet/receipt-sdk": "*",
     "@prisma/client": "^6.3.1",
     "@sinclair/typebox": "^0.34.14",
     "fastify": "^5.2.1",

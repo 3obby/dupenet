@@ -14,12 +14,16 @@ export { merkleRoot, verifyMerkleProof } from "./merkle.js";
 // File layer
 export { chunkFile, reassembleFile, type ChunkResult } from "./chunker.js";
 
-// Receipt challenge + PoW
+// Receipt challenge + PoW + payload construction
 export {
   buildChallenge,
+  buildChallengeRaw,
+  buildTokenPayload,
+  buildClientSigPayload,
   computePowHash,
   getTarget,
   powMeetsTarget,
+  minePoW,
   type ChallengeInput,
 } from "./receipt-challenge.js";
 

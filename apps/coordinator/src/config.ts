@@ -12,4 +12,9 @@ export const config = {
   port: parseInt(env("COORDINATOR_PORT", "3102"), 10),
   host: env("COORDINATOR_HOST", "0.0.0.0"),
   databaseUrl: env("DATABASE_URL", "postgresql://dupenet:dupenet@localhost:5432/dupenet"),
+  /** Comma-separated hex Ed25519 public keys of trusted receipt mints. */
+  mintPubkeys: env("MINT_PUBKEYS", "")
+    .split(",")
+    .map((s) => s.trim())
+    .filter((s) => s.length > 0),
 } as const;
