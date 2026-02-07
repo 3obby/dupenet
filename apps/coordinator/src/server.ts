@@ -34,7 +34,7 @@ import {
   HOST_REGISTER_EVENT,
   RECEIPT_SUBMIT_EVENT,
 } from "./event-log/schemas.js";
-import { currentEpoch } from "@dupenet/physics";
+import { currentEpoch, verifyEventSignature } from "@dupenet/physics";
 import { verifyReceiptV2, type ReceiptV2Input } from "@dupenet/receipt-sdk";
 import { settleEpoch } from "./views/epoch-settlement.js";
 import {
@@ -67,12 +67,22 @@ export async function buildApp(deps?: CoordinatorDeps) {
 
   // ── Tip ────────────────────────────────────────────────────────
   app.post("/tip", async (req, reply) => {
-    const { cid, amount, payment_proof, from } = req.body as {
+    const { cid, amount, payment_proof, from, sig } = req.body as {
       cid: string;
       amount: number;
       payment_proof: string;
       from: string;
+      sig: string;
     };
+
+    // Verify Ed25519 signature over canonical(payload)
+    const tipPayload = { cid, amount, payment_proof };
+    const sigValid = await verifyEventSignature(from, sig, tipPayload);
+    if (!sigValid) {
+      return reply
+        .status(401)
+        .send({ error: "invalid_signature", detail: "Ed25519 sig verification failed" });
+    }
 
     const { poolCredit, protocolFee } = await creditTip(prisma, cid, amount);
 
@@ -80,7 +90,7 @@ export async function buildApp(deps?: CoordinatorDeps) {
       type: TIP_EVENT,
       timestamp: Date.now(),
       signer: from,
-      sig: "", // TODO: verify signature
+      sig,
       payload: {
         cid,
         amount,
@@ -109,11 +119,21 @@ export async function buildApp(deps?: CoordinatorDeps) {
 
   // ── Host registration ──────────────────────────────────────────
   app.post("/host/register", async (req, reply) => {
-    const { pubkey, endpoint, pricing } = req.body as {
+    const { pubkey, endpoint, pricing, sig } = req.body as {
       pubkey: string;
       endpoint: string | null;
       pricing: { min_request_sats: number; sats_per_gb: number };
+      sig: string;
     };
+
+    // Verify Ed25519 signature over canonical(payload)
+    const regPayload = { pubkey, endpoint, pricing };
+    const sigValid = await verifyEventSignature(pubkey, sig, regPayload);
+    if (!sigValid) {
+      return reply
+        .status(401)
+        .send({ error: "invalid_signature", detail: "Ed25519 sig verification failed" });
+    }
 
     // TODO: verify stake payment via LND
     const epoch = currentEpoch();
@@ -123,7 +143,7 @@ export async function buildApp(deps?: CoordinatorDeps) {
       type: HOST_REGISTER_EVENT,
       timestamp: Date.now(),
       signer: pubkey,
-      sig: "",
+      sig,
       payload: { pubkey, endpoint, pricing, epoch },
     });
 

@@ -63,6 +63,27 @@ export {
   type AvailabilityAssessment,
 } from "./availability.js";
 
+// Ed25519 sign/verify (event signatures, key generation)
+export {
+  generateKeypair,
+  ed25519Sign,
+  ed25519Verify,
+} from "./ed25519.js";
+
+// Event signature (sign/verify canonical-encoded payloads)
+export {
+  signEventPayload,
+  verifyEventSignature,
+} from "./event-signature.js";
+
+// Block selection (anti-special-casing PRF)
+export {
+  selectBlockIndex,
+  selectBlock,
+  verifyBlockSelection,
+  blockSelectionPrfHash,
+} from "./block-selection.js";
+
 // All schemas
 export * from "./schemas/index.js";
 

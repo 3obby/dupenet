@@ -23,7 +23,7 @@ PHASE 1: BLOB UTILITY (Layer A)
 [x] HEAD /asset/:root                returns size, kind, mime headers
 [x] GET /pricing                     returns PricingV1
 [x] GET /health                      gateway health check
-[x] Physics unit tests               canonical, cid, chunker, merkle, reward, epoch-aggregation, availability (7 suites, vitest)
+[x] Physics unit tests               canonical, cid, chunker, merkle, reward, epoch-aggregation, availability, block-selection, event-signature (9 suites, vitest)
 [x] Gateway integration test          PUT /block xN -> PUT /file -> PUT /asset -> GET -> reassemble -> verify (7 tests)
 [ ] EXIF/metadata stripping           strip before hashing (mentioned in spec, not implemented)
 [ ] Runtime schema validation         TypeBox schemas defined but Value.Check not called on ingest
@@ -44,7 +44,7 @@ PHASE 1: BLOB UTILITY (Layer A)
 [x] min_request_sats enforcement      price = min_request_sats used for all block fetches
 [x] L402 integration tests            8 tests: 402 challenge, paid fetch, invalid/unknown/mismatch/single-use (mock LND)
 [x] Client PoW receipt minting        minePoW(), buildChallengeRaw/ClientSigPayload/TokenPayload in physics
-[ ] Block selection (anti-special)    PRF(epoch_seed || file_root || client) mod num_blocks — not implemented
+[x] Block selection (anti-special)    selectBlockIndex(), selectBlock(), verifyBlockSelection() in physics (SHA256 PRF)
 
 ## Step 3 — Node Kit + Host Registration
 
@@ -116,7 +116,7 @@ COORDINATOR — PERSISTENCE + AGGREGATION
 [x] Aggregator fee                      3% deducted from cap before host distribution
 [x] Epoch settlement tests              8 coordinator tests (mock Prisma) + 12 physics aggregation tests
 [~] Epoch boundary trigger              POST /epoch/settle (manual or cron); no built-in scheduler yet
-[ ] Signature verification on events    tip.sig and host registration sig are stubs
+[x] Signature verification on events    Ed25519 verify on POST /tip and POST /host/register; rejects forged/missing sigs
 
 INTEGRATION / E2E
 ------------------
@@ -128,6 +128,7 @@ INTEGRATION / E2E
 [x] Epoch settlement test              mock Prisma: eligible/ineligible hosts, bounty drain, idempotency, score split
 [x] Pin contract test                  mock Prisma: create/status/cancel, drain rate, exhaustion, validation (22 tests)
 [x] Availability test                  mock Prisma + mock fetcher: spot-check, scoring, transitions (12 tests)
+[x] Event signature test               real Ed25519 keypairs: signed tip/register accepted, forged/missing rejected (7 tests)
 
 SPRINT ORDER (recommended)
 ---------------------------
