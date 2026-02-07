@@ -45,6 +45,14 @@ export {
   type HostScore,
 } from "./reward.js";
 
+// Epoch aggregation (pure receipt grouping + eligibility)
+export {
+  aggregateReceipts,
+  isPayoutEligible,
+  type ReceiptDigest,
+  type EpochGroup,
+} from "./epoch-aggregation.js";
+
 // All schemas
 export * from "./schemas/index.js";
 

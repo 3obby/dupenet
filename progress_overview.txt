@@ -23,7 +23,7 @@ PHASE 1: BLOB UTILITY (Layer A)
 [x] HEAD /asset/:root                returns size, kind, mime headers
 [x] GET /pricing                     returns PricingV1
 [x] GET /health                      gateway health check
-[x] Physics unit tests               canonical, cid, chunker, merkle, reward (5 suites, vitest)
+[x] Physics unit tests               canonical, cid, chunker, merkle, reward, epoch-aggregation (6 suites, vitest)
 [x] Gateway integration test          PUT /block xN -> PUT /file -> PUT /asset -> GET -> reassemble -> verify (7 tests)
 [ ] EXIF/metadata stripping           strip before hashing (mentioned in spec, not implemented)
 [ ] Runtime schema validation         TypeBox schemas defined but Value.Check not called on ingest
@@ -100,10 +100,15 @@ COORDINATOR — PERSISTENCE + AGGREGATION
 [x] Event log persistence               append-only Postgres via prisma.event.create
 [x] POST /receipt/submit                validates via receipt-sdk, checks epoch range + replay, stores in Prisma
 [x] Receipt validation pipeline         verifyReceiptV2 checks client_sig, PoW, receipt_token against mint pubkeys
-[ ] Epoch boundary trigger              no cron/scheduler
-[ ] Payout execution                    distributeRewards() exists but not called anywhere
-[ ] Bounty drain                        EPOCH_REWARD_PCT drain per epoch — not implemented
-[ ] Aggregator fee                      3% deduction — not implemented
+[x] Epoch aggregation (physics)         aggregateReceipts(), isPayoutEligible() — pure receipt grouping + 5/3 threshold
+[x] Epoch settlement (coordinator)      settleEpoch() — aggregate receipts, compute payouts, drain bounty, persist EpochSummary
+[x] POST /epoch/settle                  validates epoch is closed, calls settleEpoch(), idempotent (no double-spend)
+[x] GET /epoch/summary/:epoch           returns settlement results for a given epoch
+[x] Payout execution                    distributeRewards() called by settleEpoch(), rewards split by host score
+[x] Bounty drain                        cidEpochCap() limits per-epoch drain, debitPayout() debits pool
+[x] Aggregator fee                      3% deducted from cap before host distribution
+[x] Epoch settlement tests              8 coordinator tests (mock Prisma) + 12 physics aggregation tests
+[~] Epoch boundary trigger              POST /epoch/settle (manual or cron); no built-in scheduler yet
 [ ] Signature verification on events    tip.sig and host registration sig are stubs
 
 INTEGRATION / E2E
@@ -113,6 +118,7 @@ INTEGRATION / E2E
 [x] L402 flow test                      402 -> pay invoice -> receive block + receipt_token (8 tests, mock LND)
 [ ] Docker E2E                          compose up -> upload -> tip -> host mirrors -> L402 fetch -> receipt -> payout
 [x] Receipt round-trip test             construct valid receipt (PoW + mint sig + client sig) -> verifyReceiptV2 passes
+[x] Epoch settlement test              mock Prisma: eligible/ineligible hosts, bounty drain, idempotency, score split
 
 SPRINT ORDER (recommended)
 ---------------------------
@@ -121,7 +127,7 @@ SPRINT ORDER (recommended)
 2. L402 + mint settlement               DONE (8 tests pass, mock LND; Docker E2E with real LND in sprint 6)
 3. Coordinator -> Postgres              DONE (tsc clean; requires `prisma db push` + Postgres to run)
 4a. Receipt submission + validation     DONE (receipt-sdk e2e test passes; coordinator handler typechecks)
-4b. Epoch aggregation + payout          requires: 4a. exit: epoch boundary triggers payout, bounty drains
+4b. Epoch aggregation + payout          DONE (20 new tests: 12 physics + 8 coordinator; bounty drains correctly)
 5. Pin contracts lifecycle              requires: 4b. exit: create pin, drain rate enforced, cancel returns budget
 6. Docker E2E                           requires: all above. exit: full compose flow works end-to-end
 

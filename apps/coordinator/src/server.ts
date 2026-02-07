@@ -10,7 +10,9 @@
  *   GET  /bounty/:cid    — query bounty pool
  *   POST /host/register  — register a host
  *   GET  /directory       — get host directory
- *   POST /receipt/submit  — submit receipts for epoch (stub)
+ *   POST /receipt/submit  — submit receipts for epoch
+ *   POST /epoch/settle   — settle a completed epoch (aggregation + payouts)
+ *   GET  /epoch/summary/:epoch — get settlement results for an epoch
  *   POST /pin            — create pin contract (stub)
  *   GET  /pin/:id        — pin status (stub)
  *   GET  /health         — health check (verifies DB connectivity)
@@ -31,6 +33,7 @@ import {
 } from "./event-log/schemas.js";
 import { currentEpoch } from "@dupenet/physics";
 import { verifyReceiptV2, type ReceiptV2Input } from "@dupenet/receipt-sdk";
+import { settleEpoch } from "./views/epoch-settlement.js";
 
 export interface CoordinatorDeps {
   prisma?: PrismaClient;
@@ -193,6 +196,59 @@ export async function buildApp(deps?: CoordinatorDeps) {
 
     return reply.send({ ok: true });
   });
+
+  // ── Epoch settlement ────────────────────────────────────────────
+  app.post("/epoch/settle", async (req, reply) => {
+    const { epoch } = req.body as { epoch: number };
+
+    if (typeof epoch !== "number" || !Number.isInteger(epoch) || epoch < 0) {
+      return reply.status(400).send({ error: "invalid_epoch" });
+    }
+
+    // Cannot settle the current or future epoch (it's still open)
+    const current = currentEpoch();
+    if (epoch >= current) {
+      return reply.status(422).send({
+        error: "epoch_not_closed",
+        detail: `Epoch ${epoch} is not yet closed (current: ${current})`,
+        current,
+      });
+    }
+
+    const result = await settleEpoch(prisma, epoch);
+    return reply.send({ ok: true, ...result });
+  });
+
+  app.get<{ Params: { epoch: string } }>(
+    "/epoch/summary/:epoch",
+    async (req, reply) => {
+      const epoch = parseInt(req.params.epoch, 10);
+      if (isNaN(epoch) || epoch < 0) {
+        return reply.status(400).send({ error: "invalid_epoch" });
+      }
+
+      const summaries = await prisma.epochSummaryRecord.findMany({
+        where: { epoch },
+        orderBy: { id: "asc" },
+      });
+
+      if (summaries.length === 0) {
+        return reply.send({ epoch, settled: false, summaries: [] });
+      }
+
+      return reply.send({
+        epoch,
+        settled: true,
+        summaries: summaries.map((s) => ({
+          host: s.hostPubkey,
+          cid: s.cid,
+          receipt_count: s.receiptCount,
+          unique_clients: s.uniqueClients,
+          reward_sats: Number(s.rewardSats),
+        })),
+      });
+    },
+  );
 
   // ── Pin (stub) ─────────────────────────────────────────────────
   app.post("/pin", async (_req, reply) => {
