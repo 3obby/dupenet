@@ -1,0 +1,52 @@
+# Node operator kit — minimal deployment for hosts.
+# DocRef: MVP_PLAN:§Node Kit
+#
+# Run: docker compose -f deploy/compose-nodekit.yml up
+
+services:
+  gateway:
+    build:
+      context: ..
+      dockerfile: apps/gateway/Dockerfile
+    ports:
+      - "3100:3100"
+    environment:
+      GATEWAY_PORT: "3100"
+      BLOCK_STORE_PATH: /data/blocks
+      MINT_URL: ${MINT_URL:-http://mint.dupenet.example:3101}
+    volumes:
+      - block-data:/data/blocks
+    healthcheck:
+      test: ["CMD", "wget", "-q", "--spider", "http://localhost:3100/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+
+  agent:
+    build:
+      context: ..
+      dockerfile: apps/node-agent/Dockerfile
+    environment:
+      AGENT_GATEWAY_URL: http://gateway:3100
+      AGENT_COORDINATOR_URL: ${COORDINATOR_URL:-http://coordinator.dupenet.example:3102}
+      AGENT_HOST_PUBKEY: ${HOST_PUBKEY}
+    depends_on:
+      gateway:
+        condition: service_healthy
+
+  caddy:
+    image: caddy:2-alpine
+    ports:
+      - "443:443"
+      - "80:80"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy-data:/data
+      - caddy-config:/config
+    depends_on:
+      - gateway
+
+volumes:
+  block-data:
+  caddy-data:
+  caddy-config:

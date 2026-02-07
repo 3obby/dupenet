@@ -1,0 +1,46 @@
+# Reverse proxy for dupenet services.
+# Replace :80 with your domain for automatic HTTPS.
+
+:80 {
+  # Gateway (blob serving)
+  handle /block/* {
+    reverse_proxy gateway:3100
+  }
+  handle /file/* {
+    reverse_proxy gateway:3100
+  }
+  handle /asset/* {
+    reverse_proxy gateway:3100
+  }
+  handle /pricing {
+    reverse_proxy gateway:3100
+  }
+  handle /served {
+    reverse_proxy gateway:3100
+  }
+
+  # Coordinator (protocol state)
+  handle /tip {
+    reverse_proxy coordinator:3102
+  }
+  handle /bounty/* {
+    reverse_proxy coordinator:3102
+  }
+  handle /directory {
+    reverse_proxy coordinator:3102
+  }
+  handle /host/* {
+    reverse_proxy coordinator:3102
+  }
+  handle /receipt/* {
+    reverse_proxy coordinator:3102
+  }
+  handle /pin/* {
+    reverse_proxy coordinator:3102
+  }
+
+  # Health
+  handle /health {
+    reverse_proxy gateway:3100
+  }
+}

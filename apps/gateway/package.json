@@ -1,0 +1,28 @@
+{
+  "name": "@dupenet/gateway",
+  "version": "0.0.1",
+  "description": "HTTP origin — serves blocks, gates with L402",
+  "type": "module",
+  "main": "dist/server.js",
+  "scripts": {
+    "build": "tsc",
+    "dev": "tsx watch src/server.ts",
+    "start": "node dist/server.js",
+    "test": "vitest run",
+    "test:unit": "vitest run test/unit",
+    "test:integration": "vitest run test/integration",
+    "typecheck": "tsc --noEmit",
+    "clean": "rm -rf dist"
+  },
+  "dependencies": {
+    "@dupenet/physics": "*",
+    "@sinclair/typebox": "^0.34.14",
+    "fastify": "^5.2.1",
+    "@fastify/type-provider-typebox": "^5.1.0"
+  },
+  "devDependencies": {
+    "typescript": "^5.7.3",
+    "tsx": "^4.19.2",
+    "vitest": "^3.0.5"
+  }
+}

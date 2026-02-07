@@ -1,0 +1,29 @@
+node_modules/
+dist/
+.turbo/
+*.tsbuildinfo
+
+# env
+.env
+.env.local
+.env.*.local
+
+# IDE
+.vscode/
+!.vscode/settings.json
+.idea/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Docker
+docker-compose.override.yml
+
+# Data volumes (dev)
+data/
+*.log
+
+# Prisma
+apps/coordinator/prisma/*.db
+apps/coordinator/prisma/migrations/

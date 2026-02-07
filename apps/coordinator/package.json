@@ -1,0 +1,32 @@
+{
+  "name": "@dupenet/coordinator",
+  "version": "0.0.1",
+  "description": "Protocol state — event log, bounty views, epoch aggregation, host registry",
+  "type": "module",
+  "main": "dist/server.js",
+  "scripts": {
+    "build": "tsc",
+    "dev": "tsx watch src/server.ts",
+    "start": "node dist/server.js",
+    "test": "vitest run",
+    "test:unit": "vitest run test/unit",
+    "test:integration": "vitest run test/integration",
+    "typecheck": "tsc --noEmit",
+    "clean": "rm -rf dist",
+    "db:push": "prisma db push",
+    "db:generate": "prisma generate"
+  },
+  "dependencies": {
+    "@dupenet/physics": "*",
+    "@prisma/client": "^6.3.1",
+    "@sinclair/typebox": "^0.34.14",
+    "fastify": "^5.2.1",
+    "@fastify/type-provider-typebox": "^5.1.0"
+  },
+  "devDependencies": {
+    "prisma": "^6.3.1",
+    "typescript": "^5.7.3",
+    "tsx": "^4.19.2",
+    "vitest": "^3.0.5"
+  }
+}

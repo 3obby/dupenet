@@ -1,0 +1,27 @@
+{
+  "name": "@dupenet/receipt-sdk",
+  "version": "0.0.1",
+  "description": "VerifyReceiptV2 — zero-dependency receipt verification. Browser/Node/Deno/Bun.",
+  "type": "module",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "scripts": {
+    "build": "tsc",
+    "test": "vitest run",
+    "test:vectors": "vitest run --reporter=verbose test/vectors",
+    "typecheck": "tsc --noEmit",
+    "clean": "rm -rf dist"
+  },
+  "dependencies": {},
+  "devDependencies": {
+    "@dupenet/physics": "*",
+    "typescript": "^5.7.3",
+    "vitest": "^3.0.5"
+  }
+}

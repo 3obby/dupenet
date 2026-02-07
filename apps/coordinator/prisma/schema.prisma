@@ -1,0 +1,102 @@
+// DocRef: MVP_PLAN:§Entity Schemas
+// This schema materializes the event log into queryable state.
+// All tables are derived views — rebuildable from the event log.
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ── Event Log (append-only) ────────────────────────────────────────
+
+model Event {
+  seq       Int      @id @default(autoincrement())
+  type      String
+  timestamp BigInt
+  signer    String   // pubkey hex
+  sig       String
+  payload   Json
+  createdAt DateTime @default(now())
+
+  @@index([type])
+  @@index([signer])
+  @@index([timestamp])
+}
+
+// ── Materialized Views ─────────────────────────────────────────────
+
+model BountyPool {
+  cid              String @id // CID hex
+  balance          BigInt @default(0)
+  lastPayoutEpoch  Int    @default(0)
+  totalTipped      BigInt @default(0)
+
+  @@map("bounty_pool")
+}
+
+model Host {
+  pubkey           String  @id
+  endpoint         String?
+  stake            BigInt  @default(0)
+  status           String  @default("PENDING") // PENDING|TRUSTED|DEGRADED|INACTIVE|UNBONDING|SLASHED
+  minRequestSats   Int     @default(3)
+  satsPerGb        Int     @default(500)
+  availabilityScore Float  @default(0)
+  registeredEpoch  Int
+  unbondEpoch      Int?
+  createdAt        DateTime @default(now())
+
+  servedCids HostServe[]
+
+  @@map("host")
+}
+
+model HostServe {
+  id              Int    @id @default(autoincrement())
+  hostPubkey      String
+  cid             String
+  registeredEpoch Int
+
+  host Host @relation(fields: [hostPubkey], references: [pubkey])
+
+  @@unique([hostPubkey, cid])
+  @@index([cid])
+  @@map("host_serve")
+}
+
+model EpochSummaryRecord {
+  id            Int    @id @default(autoincrement())
+  epoch         Int
+  hostPubkey    String
+  cid           String
+  receiptCount  Int    @default(0)
+  uniqueClients Int    @default(0)
+  rewardSats    BigInt @default(0)
+
+  @@unique([epoch, hostPubkey, cid])
+  @@index([epoch])
+  @@map("epoch_summary")
+}
+
+model PinContract {
+  id             String @id
+  client         String
+  assetRoot      String
+  minCopies      Int
+  durationEpochs Int
+  budgetSats     BigInt
+  drainRate      BigInt
+  remainingBudget BigInt
+  status         String @default("ACTIVE") // ACTIVE|EXHAUSTED|CANCELLED
+  createdEpoch   Int
+  sig            String
+  createdAt      DateTime @default(now())
+
+  @@index([assetRoot])
+  @@index([status])
+  @@map("pin_contract")
+}

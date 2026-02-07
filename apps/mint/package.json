@@ -1,0 +1,25 @@
+{
+  "name": "@dupenet/mint",
+  "version": "0.0.1",
+  "description": "Receipt mint — stateless Ed25519 token signer",
+  "type": "module",
+  "main": "dist/server.js",
+  "scripts": {
+    "build": "tsc",
+    "dev": "tsx watch src/server.ts",
+    "start": "node dist/server.js",
+    "test": "vitest run",
+    "typecheck": "tsc --noEmit",
+    "clean": "rm -rf dist"
+  },
+  "dependencies": {
+    "@dupenet/physics": "*",
+    "@noble/ed25519": "^2.2.3",
+    "fastify": "^5.2.1"
+  },
+  "devDependencies": {
+    "typescript": "^5.7.3",
+    "tsx": "^4.19.2",
+    "vitest": "^3.0.5"
+  }
+}

@@ -1,0 +1,22 @@
+---
+alwaysApply: true
+---
+Monorepo rules (docs/cannon is canonical):
+
+- Canonical docs live in `docs/cannon`. Do not create parallel docs. Cite with "DocRef: SPEC:§x, ROADMAP:Px".
+Do not create unnecessary documents- self-documenting code only.
+Use `docs/cannon` as the only canonical documentation. Roadmap is the TODO list.
+Always cite SPEC/ROADMAP sections in code headers: "DocRef: SPEC:§..., ROADMAP:...".
+No direct `process.env` accesses
+
+SPEC.md	Frozen physics	Schemas, algorithms, invariants, encoding
+
+REQUIREMENTS.md	Goals & constraints	What must be true, scope definitions, success criteria
+
+RATIONALES.md	Design reasoning	Why each decision was made
+
+ROADMAP.md	Implementation plan	Phases, checklists, timelines
+
+Do not over-formalize; do not add unnecessary complexity.
+
+NO LANGUAGE/ENGLISH text in tooltips. this is internationalized. no rounded corners.
