@@ -153,8 +153,8 @@ INTEGRATION / E2E
 [x] Node-agent poll cycle test        mock fetch: discover, mirror, error handling (6 tests)
 [x] Epoch scheduler test             mock Prisma: tick settles, idempotent, start/stop, error handling (7 tests)
 
-SPRINT ORDER (recommended)
----------------------------
+SPRINT ORDER (Phase 1 — complete)
+-----------------------------------
 
 1. Gateway integration tests            DONE (7 tests pass)
 2. L402 + mint settlement               DONE (8 tests pass, mock LND; Docker E2E with real LND in sprint 6)
@@ -163,5 +163,159 @@ SPRINT ORDER (recommended)
 4b. Epoch aggregation + payout          DONE (20 new tests: 12 physics + 8 coordinator; bounty drains correctly)
 5. Pin contracts lifecycle              DONE (22 new tests; create, cancel, drain rate, exhaustion all work)
 6. Docker E2E                           DONE — full pipeline: upload → L402 paid fetch → tip → receipt submit → epoch settle
+
+
+================================================================================
+PATH A: DEPLOY + CLI (get content flowing)
+================================================================================
+
+Goal: founder can upload seed content, share links, people can fetch via L402.
+DocRef: MVP_PLAN:§Bootstrap Sequence (Week 1-2), §What Layer A Markets Need
+
+## Sprint 7 — CLI client (apps/cli)
+
+The minimum tool for a human to use the protocol without curl.
+Wraps the HTTP API into a command-line workflow.
+
+[x] Project scaffold                    apps/cli, TypeScript, imports @dupenet/physics, commander
+[x] `dupenet upload <file>`             chunk → PUT /block × N → PUT /file → PUT /asset → print asset_root
+    - chunker + manifest + asset root construction (reuse physics)
+    - multi-block upload with progress indicator
+    - MIME auto-detect from extension, auto kind (TEXT/IMAGE/AUDIO/VIDEO/FILE)
+    - print shareable URL: https://<gateway>/asset/<root>
+[x] `dupenet fetch <cid> [-o file]`     GET /asset → GET /file → stream GET /block × N → reassemble → write
+    - auto-detect: raw CID (single block) vs asset_root (multi-block)
+    - L402 flow: get 402 → pay invoice via LND REST → present preimage → receive bytes
+    - --free flag fails instead of paying (for dev mode gateways)
+    - SHA256 integrity verification on reassembly
+[x] `dupenet tip <cid> <sats>`          sign tip → POST /tip → print bounty balance
+    - Ed25519 sign from local keyfile (~/.dupenet/key.json)
+    - print pool_credit + protocol_fee
+[x] `dupenet pin create <asset_root>`   POST /pin → print pin_id, drain_rate
+    - --budget, --duration, --copies flags
+    - `dupenet pin status <pin_id>` → GET /pin/:id
+    - `dupenet pin cancel <pin_id>` → POST /pin/:id/cancel
+[x] `dupenet info <cid>`                GET /bounty/:cid + GET /asset/:root → print summary
+    - bounty balance, asset metadata, gateway pricing
+[x] `dupenet keygen`                    generate Ed25519 keypair → write to ~/.dupenet/key.json
+    - reuse physics generateKeypair()
+    - --force to overwrite existing
+    - print pubkey hex
+[x] `dupenet config`                    gateway URL, coordinator URL, key path, LND connection
+    - ~/.dupenet/config.json
+    - env var overrides (DUPENET_GATEWAY, DUPENET_COORDINATOR, DUPENET_KEY_PATH)
+[x] `dupenet hosts`                     GET /directory → print host list + pricing + status
+[x] LND payment integration             pay L402 invoices via LND REST (/v2/router/send)
+    - connect to user's LND (REST, macaroon auth)
+    - fallback: print invoice + prompt for manual wallet payment
+
+Exit: `dupenet upload cat.jpg` → prints asset_root URL → `dupenet fetch <root> -o out.jpg` → identical file.
+      `dupenet tip <root> 100` → bounty pool credited.
+
+## Sprint 8 — Real deployment (founder stack on VPS)
+
+The founder stack moves from Docker-on-laptop to a public server.
+DocRef: MVP_PLAN:§Node Kit, §What Hosts vs What You Host, §Bootstrap Sequence
+
+[ ] VPS provisioning                    BTC-native provider (SporeStack or similar); 2+ GB RAM, SSD
+[ ] Domain + DNS                        point domain at VPS (e.g. gateway.dupenet.dev)
+[ ] Caddyfile.founder → real domain     automatic HTTPS via Caddy
+[ ] LND mainnet (or signet)             real Lightning node; fund with bootstrap sats
+    - decision: start on signet (test sats) or mainnet (real sats)?
+    - if mainnet: small initial fund (~100k sats), channel to well-connected node
+[ ] 2-3 mint instances                  separate keypairs, separate processes (can share VPS for MVP)
+[ ] Seed content upload                 founder uploads Tier 1 + Tier 2 content via CLI
+    - Epstein docs, FOIA releases, deplatformed archives (per Bootstrap Sequence)
+    - or: start with utility content (open-source mirrors, datasets)
+[ ] Shareable URLs                      https://gateway.dupenet.dev/asset/<root> returns content
+[ ] Monitoring                          uptime check, LND balance alerts, disk usage
+[ ] Backup strategy                     Postgres dump schedule, LND channel backups (SCB)
+
+Exit: public URL serves real content via L402. External client can `dupenet fetch` from anywhere.
+
+## Sprint 9 — Multi-host (prove the network)
+
+Second host connects to the founder's coordinator and mirrors content.
+DocRef: MVP_PLAN:§Node Kit (Target: Raspberry Pi), §Bounty Pool Mechanics
+
+[ ] Second VPS (or Pi)                  deploy compose-nodekit.yml pointing at founder coordinator
+[ ] Node-agent mirrors content          agent discovers bounty feed, mirrors top CIDs from founder gateway
+[ ] Directory shows 2 hosts             GET /directory lists both with pricing + availability
+[ ] Spot-checks pass                    coordinator verifies second host has blocks (GET /spot-check)
+[ ] Failover works                      kill host 1 → client retries host 2 → content still available
+[ ] CLI host selection                  `dupenet fetch` picks cheapest/fastest host from directory
+[ ] Receipt flow from second host       L402 fetch from host 2 → receipt → epoch settlement includes both hosts
+
+Exit: two independent hosts serve the same CID. Kill one, content survives. Receipts flow from both.
+
+
+================================================================================
+PATH B: S3 ADAPTER (platform adoption)
+================================================================================
+
+Goal: existing apps switch to dupenet storage with a config change.
+DocRef: MVP_PLAN:§S3-Compatible Adapter (Layer A — Migration Unlock)
+
+## Sprint 10 — S3-compatible adapter (apps/s3-adapter)
+
+Thin shim that speaks S3 protocol and translates to the blob layer.
+Single-tenant: runs alongside the consuming app, talks to one gateway.
+
+[ ] Project scaffold                    apps/s3-adapter, TypeScript + Fastify (or http)
+[ ] Auth layer                          S3 access key → protocol pubkey mapping (thin translation)
+    - single-user mode for MVP (one access key)
+    - SigV4 signature verification (just enough to satisfy AWS SDKs)
+[ ] PUT object → chunk + upload         receive S3 PutObject → chunk file → PUT /block × N → PUT /file → PUT /asset
+    - compute asset_root, return as ETag
+    - handle multipart uploads (S3 multipart → map to block uploads)
+    - chunking reuses @dupenet/physics
+[ ] GET object → resolve + stream       S3 GetObject → GET /asset → GET /file → stream GET /block × N
+    - reassemble blocks into response stream
+    - Range header support (partial reads)
+    - Content-Type from AssetRoot mime
+[ ] HEAD object                         S3 HeadObject → HEAD /asset → return size, content-type, ETag
+[ ] DELETE object                       return 204 (no-op; content-addressed = no true delete)
+[ ] LIST objects                        return list of known asset_roots (local cache)
+    - or: return empty (many apps don't need LIST)
+[ ] Bucket abstraction                  all objects in one "bucket" (single gateway = single bucket)
+[ ] Integration test                    `aws s3 cp` in, `aws s3 cp` out, `aws s3 ls` → identical bytes
+[ ] Docker image                        add to compose-founder.yml as optional service
+
+Exit: `aws s3 cp file.tar s3://dupenet/file.tar` succeeds.
+      `aws s3 cp s3://dupenet/file.tar -` returns identical bytes.
+      No code changes in the consuming app.
+
+## Sprint 11 — SDK + documentation
+
+Make Layer A consumable by external developers.
+DocRef: MVP_PLAN:§Receipt Verification SDK, §Adoption Path
+
+[ ] receipt-sdk published               npm publish @dupenet/receipt-sdk (zero deps, works everywhere)
+[ ] physics published                   npm publish @dupenet/physics (or subset: canonical, cid, chunker)
+[ ] HTTP API reference                  OpenAPI/Swagger spec for gateway + coordinator endpoints
+    - generated from route definitions or hand-written
+    - hosted at docs.dupenet.dev
+[ ] Integration guide                   "Store files on dupenet in 5 minutes"
+    - code samples: upload, fetch, tip, pin
+    - S3 adapter setup guide
+[ ] Receipt verification guide          "Verify paid consumption in your app"
+    - import receipt-sdk → verify receipts → rank content / gate access
+    - cross-platform use cases (Nostr, forums, media apps)
+[ ] Pin contract guide                  "Pay for durability"
+    - create pin, monitor copies, cancel/refund flow
+
+Exit: a developer who has never seen the codebase can integrate in <1 hour.
+
+
+================================================================================
+REMAINING POLISH (non-blocking, do when convenient)
+================================================================================
+
+[ ] EXIF/metadata stripping             strip before hashing (mentioned in spec, not implemented)
+[ ] Runtime schema validation           TypeBox schemas defined but Value.Check not called on ingest
+[ ] Stake locking via LND               verify stake payment on host registration (currently stubbed)
+[ ] Deterministic Docker builds         Nix flake or pinned multi-stage (DocRef: MVP_PLAN:§Longevity L6)
+[ ] Epoch root anchoring                Bitcoin transaction per epoch with merkle root (DocRef: MVP_PLAN:§Longevity L7)
+
 
 LEGEND: [x] done  [~] partial/stub  [ ] not started
