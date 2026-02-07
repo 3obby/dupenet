@@ -5,7 +5,8 @@
 #   1. Run scripts/gen-keys.sh to generate .env.local
 #   2. docker compose -f deploy/compose-founder.yml --env-file .env.local up --build
 #
-# Services: bitcoind → lnd → gateway + mint → coordinator → caddy
+# Services: bitcoind → lnd + lnd-bob → gateway + mint → coordinator → caddy
+# lnd = "alice" (gateway/mint node), lnd-bob = "bob" (E2E client payer)
 
 services:
   # ── Bitcoin (regtest) ──────────────────────────────────────────
@@ -47,6 +48,33 @@ services:
       --tlsextraip=0.0.0.0
     volumes:
       - lnd-data:/root/.lnd
+    healthcheck:
+      test: ["CMD", "lncli", "--network=regtest", "getinfo"]
+      interval: 5s
+      timeout: 5s
+      retries: 30
+
+  # ── Lightning client node (bob — pays invoices for E2E) ────────
+  lnd-bob:
+    image: lightninglabs/lnd:v0.18.5-beta
+    depends_on:
+      bitcoind:
+        condition: service_healthy
+    command: >
+      lnd
+      --bitcoin.active --bitcoin.regtest
+      --bitcoin.node=bitcoind
+      --bitcoind.rpchost=bitcoind
+      --bitcoind.rpcuser=rpc --bitcoind.rpcpass=rpc
+      --bitcoind.zmqpubrawblock=tcp://bitcoind:28332
+      --bitcoind.zmqpubrawtx=tcp://bitcoind:28333
+      --noseedbackup
+      --rpclisten=0.0.0.0:10009
+      --restlisten=0.0.0.0:8080
+      --tlsextradomain=lnd-bob
+      --tlsextraip=0.0.0.0
+    volumes:
+      - lnd-bob-data:/root/.lnd
     healthcheck:
       test: ["CMD", "lncli", "--network=regtest", "getinfo"]
       interval: 5s
@@ -164,6 +192,7 @@ services:
 volumes:
   bitcoin-data:
   lnd-data:
+  lnd-bob-data:
   block-data:
   pg-data:
   caddy-data:

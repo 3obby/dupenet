@@ -92,10 +92,10 @@ export class LndRestClient implements LndClient {
   }
 
   async lookupInvoice(paymentHash: string): Promise<InvoiceInfo> {
-    const hashB64url = Buffer.from(paymentHash, "hex").toString("base64url");
+    // LND REST: /v1/invoice/{r_hash_str} expects hex-encoded payment hash
     const res = (await this.httpRequest(
       "GET",
-      `/v1/invoice/${hashB64url}`,
+      `/v1/invoice/${paymentHash}`,
     )) as {
       state?: string;
       value?: string;

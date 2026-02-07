@@ -33,7 +33,7 @@ PHASE 1: BLOB UTILITY (Layer A)
 [x] Mint service structure            POST /sign, GET /pubkey, GET /health (apps/mint)
 [x] Ed25519 keypair load              loads from MINT_PRIVATE_KEY_HEX env var
 [x] Receipt token format              Sign("R2" || host || epoch || block_cid || response_hash || price || payment_hash)
-[x] LND service in docker compose     lnd v0.18.0-beta, regtest mode in compose-founder.yml
+[x] LND service in docker compose     lnd v0.18.5-beta + bitcoind regtest, 2-node (alice+bob) in compose-founder.yml
 [x] LND config fields                 LND_HOST, LND_MACAROON_PATH, LND_TLS_CERT_PATH in gateway + mint config
 [x] LND client package                packages/lnd-client: LndClient interface, REST impl, MockLndClient for tests
 [x] L402 challenge-response           GET /block returns 402 + invoice -> pay with preimage -> bytes + receipt_token
@@ -118,12 +118,33 @@ COORDINATOR — PERSISTENCE + AGGREGATION
 [x] Epoch boundary trigger              createEpochScheduler() auto-settles closed epochs; configurable interval + spot-checks
 [x] Signature verification on events    Ed25519 verify on POST /tip and POST /host/register; rejects forged/missing sigs
 
+DOCKER / DEPLOY
+-----------------
+
+[x] compose-founder.yml                bitcoind + lnd-alice + lnd-bob + gateway + mint + coordinator + postgres + caddy
+[x] compose-nodekit.yml                gateway + node-agent + caddy (separate Caddyfile)
+[x] Dockerfiles (4 apps)               multi-stage node:20-alpine builds (gateway, mint, coordinator, node-agent)
+[x] Coordinator entrypoint             prisma db push --skip-generate on startup (idempotent)
+[x] LND credential sharing             lnd-data volume mounted read-only to gateway + mint
+[x] LND REST wiring                    gateway + mint create LndRestClient when macaroon exists (dev mode fallback)
+[x] @noble/ed25519 sha512 setup        mint signer configures sha512Sync from @noble/hashes
+[x] Caddyfile.founder                  gateway + coordinator routes (/spot-check, /epoch, /hosts added)
+[x] Caddyfile.nodekit                  gateway-only routes
+[x] scripts/gen-keys.sh                generates Ed25519 keypairs (host + 3 mints), writes .env.local
+[x] scripts/fund-lnd.sh                funds alice + bob, opens 1M sat channel
+[x] scripts/e2e.sh                     E2E test skeleton (needs polish for receipt/settle path)
+[x] Startup config echo                all 4 apps print config on boot (port, LND mode, mint keys, genesis)
+[x] GENESIS_TIMESTAMP_MS env var       coordinator + gateway; enables epoch boundary control for testing
+[x] @types/node for Docker builds      physics + receipt-sdk; fixes Web Crypto type errors in Docker context
+[x] Buffer.slice() fix (ed25519)       wcBuf() helper handles cbor-x Buffer views correctly
+
 INTEGRATION / E2E
 ------------------
 
 [x] Gateway round-trip test             upload multi-block file, retrieve by asset_root, verify SHA256 (7 tests)
 [x] L402 flow test                      402 -> pay invoice -> receive block + receipt_token (8 tests, mock LND)
-[ ] Docker E2E                          compose up -> upload -> tip -> host mirrors -> L402 fetch -> receipt -> payout
+[~] Docker E2E                          L402 paid fetch proven (real LN): upload → 402 → bob pays → preimage → block + receipt_token ✓
+                                        remaining: receipt submit → epoch settle (needs E2E script polish)
 [x] Receipt round-trip test             construct valid receipt (PoW + mint sig + client sig) -> verifyReceiptV2 passes
 [x] Epoch settlement test              mock Prisma: eligible/ineligible hosts, bounty drain, idempotency, score split
 [x] Pin contract test                  mock Prisma: create/status/cancel, drain rate, exhaustion, validation (22 tests)
@@ -142,6 +163,7 @@ SPRINT ORDER (recommended)
 4a. Receipt submission + validation     DONE (receipt-sdk e2e test passes; coordinator handler typechecks)
 4b. Epoch aggregation + payout          DONE (20 new tests: 12 physics + 8 coordinator; bounty drains correctly)
 5. Pin contracts lifecycle              DONE (22 new tests; create, cancel, drain rate, exhaustion all work)
-6. Docker E2E                           requires: all above. exit: full compose flow works end-to-end
+6. Docker E2E                           IN PROGRESS: L402 paid fetch proven with real Lightning (2-node regtest)
+                                        remaining: automate receipt submit + epoch settle in scripts/e2e.sh
 
 LEGEND: [x] done  [~] partial/stub  [ ] not started
