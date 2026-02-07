@@ -14,8 +14,8 @@ export const config = {
   host: env("MINT_HOST", "0.0.0.0"),
   /** Ed25519 private key, 32 bytes hex-encoded. */
   privateKeyHex: env("MINT_PRIVATE_KEY_HEX", ""),
-  /** LND gRPC for settlement verification. */
-  lndHost: env("LND_HOST", "localhost:10009"),
+  /** LND REST endpoint for settlement verification (host:port). */
+  lndHost: env("LND_HOST", "localhost:8080"),
   lndMacaroonPath: env("LND_MACAROON_PATH", ""),
   lndTlsCertPath: env("LND_TLS_CERT_PATH", ""),
 } as const;

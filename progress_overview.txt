@@ -1,0 +1,128 @@
+dupenet MVP — Progress Overview
+================================
+
+PHASE 1: BLOB UTILITY (Layer A)
+--------------------------------
+
+## Step 1 — File Layer + Gateway + HTTP Origin
+
+[x] Canonical serialization          deterministic CBOR, sorted keys (packages/physics)
+[x] CID computation                  SHA256-based content addressing
+[x] Chunker                          256KiB blocks, reassembly
+[x] Merkle tree                      binary merkle, odd-leaf promotion
+[x] FileManifestV1 schema            TypeBox schema (chunk_size, size, blocks[], merkle_root)
+[x] AssetRootV1 schema               TypeBox schema (kind, original, variants, meta)
+[x] PricingV1 schema                 min_request_sats, sats_per_gb, burst
+[x] Block storage backend            filesystem: {base}/{h[0:2]}/{h[2:4]}/{hash}
+[x] PUT /block/:cid                  SHA256 verified on receive, rejects mismatches
+[x] GET /block/:cid                  serves bytes; L402-gated when LND configured, free in dev mode
+[x] PUT /file/:root                  validates file_root = SHA256(canonical(manifest)), checks all blocks exist
+[x] GET /file/:root                  returns manifest (in-memory Map)
+[x] PUT /asset/:root                 validates asset_root = SHA256(canonical(AssetRoot)), checks file exists
+[x] GET /asset/:root                 returns asset (in-memory Map)
+[x] HEAD /asset/:root                returns size, kind, mime headers
+[x] GET /pricing                     returns PricingV1
+[x] GET /health                      gateway health check
+[x] Physics unit tests               canonical, cid, chunker, merkle, reward (5 suites, vitest)
+[x] Gateway integration test          PUT /block xN -> PUT /file -> PUT /asset -> GET -> reassemble -> verify (7 tests)
+[ ] EXIF/metadata stripping           strip before hashing (mentioned in spec, not implemented)
+[ ] Runtime schema validation         TypeBox schemas defined but Value.Check not called on ingest
+
+## Step 2 — L402 Paid Fetch + Receipt Minting
+
+[x] Mint service structure            POST /sign, GET /pubkey, GET /health (apps/mint)
+[x] Ed25519 keypair load              loads from MINT_PRIVATE_KEY_HEX env var
+[x] Receipt token format              Sign("R2" || host || epoch || block_cid || response_hash || price || payment_hash)
+[x] LND service in docker compose     lnd v0.18.0-beta, regtest mode in compose-founder.yml
+[x] LND config fields                 LND_HOST, LND_MACAROON_PATH, LND_TLS_CERT_PATH in gateway + mint config
+[x] LND client package                packages/lnd-client: LndClient interface, REST impl, MockLndClient for tests
+[x] L402 challenge-response           GET /block returns 402 + invoice -> pay with preimage -> bytes + receipt_token
+[x] Invoice store                     in-memory TTL map (payment_hash -> {cid, price, host, epoch, expiry})
+[x] Invoice generation                gateway creates invoice via LndClient.createInvoice()
+[x] Mint settlement check             mint calls LndClient.lookupInvoice(), verifies SETTLED + amount >= price
+[x] Mint HTTP client                  gateway calls POST /sign on mint, receives receipt_token
+[x] min_request_sats enforcement      price = min_request_sats used for all block fetches
+[x] L402 integration tests            8 tests: 402 challenge, paid fetch, invalid/unknown/mismatch/single-use (mock LND)
+[ ] Client PoW receipt minting        H(challenge || nonce) < TARGET — not implemented
+[ ] Block selection (anti-special)    PRF(epoch_seed || file_root || client) mod num_blocks — not implemented
+
+## Step 3 — Node Kit + Host Registration
+
+[x] compose-founder.yml               gateway, mint, coordinator, postgres, lnd, caddy (all with healthchecks)
+[x] compose-nodekit.yml               gateway, node-agent, caddy
+[x] Coordinator structure             Hono server with routes, event log, materialized views
+[x] POST /host/register               registers host (stub stake verification)
+[x] GET /directory                     returns host list from in-memory Map
+[~] Node-agent basic structure         polls coordinator, announces, mirrors (mostly stubs)
+[~] Mirror agent                       mirrorCid() implemented, findProfitableTargets() returns []
+[~] Directory announcement             announceHost() works, announceServe() is TODO
+[ ] Stake locking via LND              TODO: verify stake payment
+[ ] Availability score tracking        formula in physics, not wired to coordinator
+[ ] Status lifecycle                   PENDING -> TRUSTED -> DEGRADED -> INACTIVE not enforced
+[ ] Health check responder             no spot-check endpoint in node-agent
+[ ] CID selection agent                bounty watcher stub, no real bounty feed query
+
+## Step 4 — Receipt Verification SDK
+
+[x] VerifyReceiptV2 function           packages/receipt-sdk, full verification logic
+[x] Ed25519 verify                     Web Crypto API, zero dependencies
+[x] PoW hash check                     H(challenge || nonce) < TARGET validation
+[x] Client signature check             Ed25519 sig over receipt payload
+[x] Zero external dependencies         only crypto.subtle
+[~] Test vectors                       verify.test.ts covers invalid hex/PoW/token; missing: valid e2e, forged, expired
+
+## Step 5 — Pin Contracts
+
+[x] PinContractV1 schema               TypeBox schema (physics) + Prisma model
+[ ] POST /pin                           stub: returns {ok: true, message: "stub"}
+[ ] GET /pin/:id                        returns 404 not_implemented
+[ ] pin_cancel                          not implemented
+[ ] Drain rate enforcement              budget_sats / duration_epochs — not wired
+[ ] Budget management                   no top-up or debit logic
+[ ] Lifecycle transitions               ACTIVE -> EXHAUSTED/CANCELLED not enforced
+[ ] min_copies enforcement              not implemented
+[ ] Epoch proof bundle                  filtered EpochSummary for pinned asset — not implemented
+
+COORDINATOR — PERSISTENCE + AGGREGATION
+-----------------------------------------
+
+[x] Prisma schema                      Event, BountyPool, Host, HostServe, EpochSummaryRecord, PinContract
+[x] Prisma client generated            in Dockerfile (npx prisma generate)
+[x] POST /tip                          credits bounty pool (in-memory Map, stub sig verification)
+[x] GET /bounty/:cid                   reads from in-memory Map
+[x] Event log writer                   in-memory array (not persisted)
+[x] Bounty pool view                   in-memory Map
+[x] Host registry view                 in-memory Map
+[x] Epoch math                         packages/physics: epoch length 4h, current epoch, epoch boundaries
+[x] Reward formulas                    cidEpochCap, computeHostScore, distributeRewards (physics)
+[x] EpochSummary schema                defined in physics
+[ ] Coordinator -> Postgres             Prisma schema exists but zero imports/usage of @prisma/client in code
+[ ] Event log persistence               currently in-memory array; TODO: Postgres
+[ ] POST /receipt/submit                stub: returns {ok: true, message: "stub"}
+[ ] Receipt validation pipeline         verify receipt_token, client_sig, PoW — not wired
+[ ] Epoch boundary trigger              no cron/scheduler
+[ ] Payout execution                    distributeRewards() exists but not called anywhere
+[ ] Bounty drain                        EPOCH_REWARD_PCT drain per epoch — not implemented
+[ ] Aggregator fee                      3% deduction — not implemented
+[ ] Signature verification on events    tip.sig and host registration sig are stubs
+
+INTEGRATION / E2E
+------------------
+
+[x] Gateway round-trip test             upload multi-block file, retrieve by asset_root, verify SHA256 (7 tests)
+[x] L402 flow test                      402 -> pay invoice -> receive block + receipt_token (8 tests, mock LND)
+[ ] Docker E2E                          compose up -> upload -> tip -> host mirrors -> L402 fetch -> receipt -> payout
+[ ] Receipt round-trip test             L402 pay -> mint signs -> client mints PoW receipt -> submit -> validate
+
+SPRINT ORDER (recommended)
+---------------------------
+
+1. Gateway integration tests            DONE (7 tests pass)
+2. L402 + mint settlement               DONE (8 tests pass, mock LND; Docker E2E with real LND in sprint 6)
+3. Coordinator -> Postgres              requires: nothing (parallel with 2). exit: state survives restart
+4a. Receipt submission + validation     requires: sprints 2+3. exit: POST /receipt/submit validates real receipts
+4b. Epoch aggregation + payout          requires: 4a. exit: epoch boundary triggers payout, bounty drains
+5. Pin contracts lifecycle              requires: 4b. exit: create pin, drain rate enforced, cancel returns budget
+6. Docker E2E                           requires: all above. exit: full compose flow works end-to-end
+
+LEGEND: [x] done  [~] partial/stub  [ ] not started
