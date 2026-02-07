@@ -8,7 +8,9 @@
  * Routes:
  *   POST /tip            — tip a CID
  *   GET  /bounty/:cid    — query bounty pool
+ *   GET  /bounty/feed    — profitable CIDs for node agents
  *   POST /host/register  — register a host
+ *   POST /host/serve     — announce host serves a CID
  *   GET  /directory       — get host directory
  *   POST /receipt/submit  — submit receipts for epoch
  *   POST /epoch/settle   — settle a completed epoch (aggregation + payouts)
@@ -27,7 +29,7 @@ import Fastify from "fastify";
 import { PrismaClient } from "@prisma/client";
 import { config } from "./config.js";
 import { creditTip, getPool } from "./views/bounty-pool.js";
-import { registerHost, getAllHosts } from "./views/host-registry.js";
+import { registerHost, getAllHosts, addServedCid, getHost } from "./views/host-registry.js";
 import { appendEvent, getEventCount } from "./event-log/writer.js";
 import {
   TIP_EVENT,
@@ -117,6 +119,64 @@ export async function buildApp(deps?: CoordinatorDeps) {
     },
   );
 
+  // ── Bounty feed (profitable CIDs for node agents) ──────────────
+  app.get("/bounty/feed", async (req, reply) => {
+    const minBalance = parseInt(
+      (req.query as Record<string, string>).min_balance ?? "100",
+      10,
+    );
+    const limit = Math.min(
+      parseInt((req.query as Record<string, string>).limit ?? "50", 10),
+      200,
+    );
+
+    // Get all bounty pools above threshold
+    const pools = await prisma.bountyPool.findMany({
+      where: { balance: { gte: BigInt(minBalance) } },
+      orderBy: { balance: "desc" },
+      take: limit,
+    });
+
+    // For each CID, get host count + endpoints
+    const feed = await Promise.all(
+      pools.map(async (pool) => {
+        const serves = await prisma.hostServe.findMany({
+          where: { cid: pool.cid },
+          select: { hostPubkey: true },
+        });
+
+        // Get endpoints for serving hosts
+        const endpoints: string[] = [];
+        for (const s of serves) {
+          const host = await prisma.host.findUnique({
+            where: { pubkey: s.hostPubkey },
+            select: { endpoint: true, status: true },
+          });
+          if (host?.endpoint && host.status === "TRUSTED") {
+            endpoints.push(host.endpoint);
+          }
+        }
+
+        const balance = Number(pool.balance);
+        const hostCount = serves.length;
+
+        return {
+          cid: pool.cid,
+          balance,
+          host_count: hostCount,
+          // Profitability: balance per host (higher = more attractive to new hosts)
+          profitability: hostCount > 0 ? Math.floor(balance / hostCount) : balance,
+          endpoints,
+        };
+      }),
+    );
+
+    // Sort by profitability (highest first — CIDs with few hosts and high bounty)
+    feed.sort((a, b) => b.profitability - a.profitability);
+
+    return reply.send({ feed, timestamp: Date.now() });
+  });
+
   // ── Host registration ──────────────────────────────────────────
   app.post("/host/register", async (req, reply) => {
     const { pubkey, endpoint, pricing, sig } = req.body as {
@@ -160,6 +220,37 @@ export async function buildApp(deps?: CoordinatorDeps) {
       availability_score: h.availability_score,
     }));
     return reply.send({ hosts, timestamp: Date.now() });
+  });
+
+  // ── Host serve announcement ─────────────────────────────────────
+  app.post("/host/serve", async (req, reply) => {
+    const { pubkey, cid, sig } = req.body as {
+      pubkey: string;
+      cid: string;
+      sig: string;
+    };
+
+    // Verify signature
+    const servePayload = { pubkey, cid };
+    const sigValid = await verifyEventSignature(pubkey, sig, servePayload);
+    if (!sigValid) {
+      return reply
+        .status(401)
+        .send({ error: "invalid_signature" });
+    }
+
+    // Verify host exists
+    const host = await getHost(prisma, pubkey);
+    if (!host) {
+      return reply
+        .status(404)
+        .send({ error: "host_not_found" });
+    }
+
+    const epoch = currentEpoch();
+    await addServedCid(prisma, pubkey, cid, epoch);
+
+    return reply.status(201).send({ ok: true, pubkey, cid, epoch });
   });
 
   // ── Receipt submission ──────────────────────────────────────────

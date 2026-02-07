@@ -53,9 +53,9 @@ PHASE 1: BLOB UTILITY (Layer A)
 [x] Coordinator structure             Hono server with routes, event log, materialized views
 [x] POST /host/register               registers host (stub stake verification)
 [x] GET /directory                     returns host list from in-memory Map
-[~] Node-agent basic structure         polls coordinator, announces, mirrors (mostly stubs)
-[~] Mirror agent                       mirrorCid() implemented, findProfitableTargets() returns []
-[~] Directory announcement             announceHost() works, announceServe() is TODO
+[x] Node-agent poll loop                discover profitable CIDs → mirror from source → announce serve (complete)
+[x] Mirror agent                       findProfitableTargets() queries GET /bounty/feed; mirrorCid() fetches + pushes
+[x] Directory announcement             announceHost() signed registration; announceServe() signed HostServe
 [x] Availability score tracking        computeAvailabilityScore() in physics + updateAllScores() in coordinator
 [x] Status lifecycle                   PENDING->TRUSTED (score>=0.6), TRUSTED->DEGRADED (score<0.6), ->INACTIVE (score==0)
 [x] Spot-check responder              GET /spot-check/:cid on gateway (verifies hash, no L402, no bytes)
@@ -65,7 +65,7 @@ PHASE 1: BLOB UTILITY (Layer A)
 [x] GET /hosts/:pubkey/checks         returns check history + availability score + recommended status
 [x] Availability tests                9 physics + 12 coordinator tests (scoring, transitions, spot-check runner)
 [ ] Stake locking via LND              TODO: verify stake payment
-[ ] CID selection agent                bounty watcher stub, no real bounty feed query
+[x] CID selection agent                queries GET /bounty/feed, filters by minBounty, mirrors top profitability CIDs
 
 ## Step 4 — Receipt Verification SDK
 
@@ -129,6 +129,8 @@ INTEGRATION / E2E
 [x] Pin contract test                  mock Prisma: create/status/cancel, drain rate, exhaustion, validation (22 tests)
 [x] Availability test                  mock Prisma + mock fetcher: spot-check, scoring, transitions (12 tests)
 [x] Event signature test               real Ed25519 keypairs: signed tip/register accepted, forged/missing rejected (7 tests)
+[x] Bounty feed + host/serve test     bounty feed returns profitable CIDs; signed serve announcements (6 tests)
+[x] Node-agent poll cycle test        mock fetch: discover, mirror, error handling (6 tests)
 
 SPRINT ORDER (recommended)
 ---------------------------
