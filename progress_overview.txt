@@ -96,8 +96,8 @@ COORDINATOR — PERSISTENCE + AGGREGATION
 [x] Epoch math                         packages/physics: epoch length 4h, current epoch, epoch boundaries
 [x] Reward formulas                    cidEpochCap, computeHostScore, distributeRewards (physics)
 [x] EpochSummary schema                defined in physics
-[ ] Coordinator -> Postgres             Prisma schema exists but zero imports/usage of @prisma/client in code
-[ ] Event log persistence               currently in-memory array; TODO: Postgres
+[x] Coordinator -> Postgres             bounty-pool, host-registry, event-log all use PrismaClient (tsc clean)
+[x] Event log persistence               append-only Postgres via prisma.event.create
 [ ] POST /receipt/submit                stub: returns {ok: true, message: "stub"}
 [ ] Receipt validation pipeline         verify receipt_token, client_sig, PoW — not wired
 [ ] Epoch boundary trigger              no cron/scheduler
@@ -119,7 +119,7 @@ SPRINT ORDER (recommended)
 
 1. Gateway integration tests            DONE (7 tests pass)
 2. L402 + mint settlement               DONE (8 tests pass, mock LND; Docker E2E with real LND in sprint 6)
-3. Coordinator -> Postgres              requires: nothing (parallel with 2). exit: state survives restart
+3. Coordinator -> Postgres              DONE (tsc clean; requires `prisma db push` + Postgres to run)
 4a. Receipt submission + validation     requires: sprints 2+3. exit: POST /receipt/submit validates real receipts
 4b. Epoch aggregation + payout          requires: 4a. exit: epoch boundary triggers payout, bounty drains
 5. Pin contracts lifecycle              requires: 4b. exit: create pin, drain rate enforced, cancel returns budget

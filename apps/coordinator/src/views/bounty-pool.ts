@@ -1,29 +1,37 @@
 /**
- * Bounty pool materialized view.
+ * Bounty pool — Prisma-backed.
  * DocRef: MVP_PLAN:§Bounty Pool Mechanics
  *
  * Materialized from tip events. Replayable from event log.
  */
 
-import {
-  TIP_PROTOCOL_FEE_PCT,
-  type CID,
-} from "@dupenet/physics";
-
-/** In-memory bounty pool state. */
-const pools = new Map<CID, { balance: number; last_payout_epoch: number }>();
+import type { PrismaClient } from "@prisma/client";
+import { TIP_PROTOCOL_FEE_PCT } from "@dupenet/physics";
 
 /**
  * Credit a tip to a bounty pool.
  * Protocol fee is deducted; remainder goes to pool.
  */
-export function creditTip(cid: CID, amount: number): { poolCredit: number; protocolFee: number } {
+export async function creditTip(
+  prisma: PrismaClient,
+  cid: string,
+  amount: number,
+): Promise<{ poolCredit: number; protocolFee: number }> {
   const protocolFee = Math.floor(amount * TIP_PROTOCOL_FEE_PCT);
   const poolCredit = amount - protocolFee;
 
-  const existing = pools.get(cid) ?? { balance: 0, last_payout_epoch: 0 };
-  existing.balance += poolCredit;
-  pools.set(cid, existing);
+  await prisma.bountyPool.upsert({
+    where: { cid },
+    create: {
+      cid,
+      balance: BigInt(poolCredit),
+      totalTipped: BigInt(amount),
+    },
+    update: {
+      balance: { increment: BigInt(poolCredit) },
+      totalTipped: { increment: BigInt(amount) },
+    },
+  });
 
   return { poolCredit, protocolFee };
 }
@@ -31,19 +39,34 @@ export function creditTip(cid: CID, amount: number): { poolCredit: number; proto
 /**
  * Debit a payout from a bounty pool.
  */
-export function debitPayout(cid: CID, amount: number, epoch: number): boolean {
-  const pool = pools.get(cid);
-  if (!pool || pool.balance < amount) return false;
+export async function debitPayout(
+  prisma: PrismaClient,
+  cid: string,
+  amount: number,
+  epoch: number,
+): Promise<boolean> {
+  const pool = await prisma.bountyPool.findUnique({ where: { cid } });
+  if (!pool || Number(pool.balance) < amount) return false;
 
-  pool.balance -= amount;
-  pool.last_payout_epoch = epoch;
+  await prisma.bountyPool.update({
+    where: { cid },
+    data: {
+      balance: { decrement: BigInt(amount) },
+      lastPayoutEpoch: epoch,
+    },
+  });
+
   return true;
 }
 
-export function getPool(cid: CID): { balance: number; last_payout_epoch: number } | undefined {
-  return pools.get(cid);
-}
-
-export function getAllPools(): ReadonlyMap<CID, { balance: number; last_payout_epoch: number }> {
-  return pools;
+export async function getPool(
+  prisma: PrismaClient,
+  cid: string,
+): Promise<{ balance: number; last_payout_epoch: number } | null> {
+  const pool = await prisma.bountyPool.findUnique({ where: { cid } });
+  if (!pool) return null;
+  return {
+    balance: Number(pool.balance),
+    last_payout_epoch: pool.lastPayoutEpoch,
+  };
 }
