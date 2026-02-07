@@ -21,4 +21,6 @@ export const config = {
   epochSchedulerIntervalMs: parseInt(env("EPOCH_SCHEDULER_INTERVAL_MS", "60000"), 10),
   /** Run spot-checks after epoch settlement. Default: true. */
   epochSchedulerSpotChecks: env("EPOCH_SCHEDULER_SPOT_CHECKS", "true") === "true",
+  /** Protocol genesis timestamp (ms). 0 = Unix epoch. Override for testing. */
+  genesisTimestampMs: parseInt(env("GENESIS_TIMESTAMP_MS", "0"), 10),
 } as const;

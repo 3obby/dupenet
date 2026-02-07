@@ -1,8 +1,8 @@
-# Reverse proxy for dupenet services.
+# Founder reverse proxy — gateway + coordinator behind one origin.
 # Replace :80 with your domain for automatic HTTPS.
 
 :80 {
-  # Gateway (blob serving)
+  # ── Gateway (blob serving) ──────────────────────────────────
   handle /block/* {
     reverse_proxy gateway:3100
   }
@@ -18,8 +18,11 @@
   handle /served {
     reverse_proxy gateway:3100
   }
+  handle /spot-check/* {
+    reverse_proxy gateway:3100
+  }
 
-  # Coordinator (protocol state)
+  # ── Coordinator (protocol state) ────────────────────────────
   handle /tip {
     reverse_proxy coordinator:3102
   }
@@ -32,14 +35,20 @@
   handle /host/* {
     reverse_proxy coordinator:3102
   }
+  handle /hosts/* {
+    reverse_proxy coordinator:3102
+  }
   handle /receipt/* {
+    reverse_proxy coordinator:3102
+  }
+  handle /epoch/* {
     reverse_proxy coordinator:3102
   }
   handle /pin/* {
     reverse_proxy coordinator:3102
   }
 
-  # Health
+  # ── Health ──────────────────────────────────────────────────
   handle /health {
     reverse_proxy gateway:3100
   }

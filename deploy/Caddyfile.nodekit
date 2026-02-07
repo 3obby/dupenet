@@ -1,0 +1,29 @@
+# Node operator reverse proxy — gateway only (no local coordinator).
+# Replace :80 with your domain for automatic HTTPS.
+
+:80 {
+  # ── Gateway (blob serving) ──────────────────────────────────
+  handle /block/* {
+    reverse_proxy gateway:3100
+  }
+  handle /file/* {
+    reverse_proxy gateway:3100
+  }
+  handle /asset/* {
+    reverse_proxy gateway:3100
+  }
+  handle /pricing {
+    reverse_proxy gateway:3100
+  }
+  handle /served {
+    reverse_proxy gateway:3100
+  }
+  handle /spot-check/* {
+    reverse_proxy gateway:3100
+  }
+
+  # ── Health ──────────────────────────────────────────────────
+  handle /health {
+    reverse_proxy gateway:3100
+  }
+}

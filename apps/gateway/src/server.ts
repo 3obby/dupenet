@@ -12,8 +12,10 @@
 
 import { fileURLToPath } from "node:url";
 import { resolve } from "node:path";
+import { existsSync } from "node:fs";
 import Fastify from "fastify";
 import { BlockStore } from "./storage/block-store.js";
+import { setGenesisTimestamp } from "@dupenet/physics";
 import { blockRoutes, type BlockRouteContext } from "./routes/block.js";
 import { fileRoutes } from "./routes/file.js";
 import { assetRoutes } from "./routes/asset.js";
@@ -23,13 +25,33 @@ import { config } from "./config.js";
 import { InvoiceStore } from "./l402/invoice-store.js";
 import { HttpMintClient, type MintClient } from "./l402/mint-client.js";
 import type { LndClient } from "@dupenet/lnd-client";
+import { LndRestClient } from "@dupenet/lnd-client";
 
 export interface GatewayDeps {
   lndClient?: LndClient | null;
   mintClient?: MintClient | null;
 }
 
+/** Try to create a real LND REST client from config, or return null (dev mode). */
+function createLndClient(): LndClient | null {
+  if (!config.lndMacaroonPath) return null;
+  if (!existsSync(config.lndMacaroonPath)) {
+    console.warn(`[gateway] LND macaroon not found at ${config.lndMacaroonPath} — dev mode`);
+    return null;
+  }
+  return new LndRestClient({
+    host: config.lndHost,
+    macaroonPath: config.lndMacaroonPath,
+    tlsCertPath: config.lndTlsCertPath,
+  });
+}
+
 export async function buildApp(deps?: GatewayDeps) {
+  // Set protocol genesis (before any epoch computation)
+  if (config.genesisTimestampMs > 0) {
+    setGenesisTimestamp(config.genesisTimestampMs);
+  }
+
   const app = Fastify({
     logger: true,
     bodyLimit: 512 * 1024, // 512KB max body (> 256KiB chunk + overhead)
@@ -53,7 +75,7 @@ export async function buildApp(deps?: GatewayDeps) {
   const lndClient =
     deps?.lndClient !== undefined
       ? deps.lndClient
-      : null; // Real LND client created from config when macaroon exists
+      : createLndClient();
   const mintClient =
     deps?.mintClient !== undefined
       ? deps.mintClient
@@ -88,6 +110,17 @@ if (
   process.argv[1] &&
   resolve(process.argv[1]) === fileURLToPath(import.meta.url)
 ) {
+  console.log("─── gateway config ───");
+  console.log(`  port:             ${config.port}`);
+  console.log(`  block_store:      ${config.blockStorePath}`);
+  console.log(`  lnd_host:         ${config.lndHost}`);
+  console.log(`  lnd_macaroon:     ${config.lndMacaroonPath || "(none — dev mode)"}`);
+  console.log(`  mint_url:         ${config.mintUrl}`);
+  console.log(`  host_pubkey:      ${config.hostPubkey || "(not set)"}`);
+  console.log(`  min_request_sats: ${config.minRequestSats}`);
+  console.log(`  sats_per_gb:      ${config.satsPerGb}`);
+  console.log("──────────────────────");
+
   const app = await buildApp();
   app.listen({ port: config.port, host: config.host }, (err) => {
     if (err) {

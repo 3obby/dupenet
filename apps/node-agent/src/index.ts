@@ -60,9 +60,17 @@ export async function pollCycle(fetchFn?: typeof fetch): Promise<{
 }
 
 async function run(): Promise<void> {
-  console.log(
-    `[agent] starting — gateway=${config.gatewayUrl} coordinator=${config.coordinatorUrl}`,
-  );
+  console.log("─── node-agent config ───");
+  console.log(`  gateway_url:     ${config.gatewayUrl}`);
+  console.log(`  coordinator_url: ${config.coordinatorUrl}`);
+  console.log(`  host_pubkey:     ${config.hostPubkey || "(not set)"}`);
+  console.log(`  host_endpoint:   ${config.hostEndpoint || "(not set)"}`);
+  console.log(`  poll_interval:   ${config.pollIntervalMs}ms`);
+  console.log(`  min_bounty:      ${config.minBountyForMirror}`);
+  console.log(`  max_mirrors:     ${config.maxMirrorsPerCycle}`);
+  console.log(`  min_request_sats: ${config.minRequestSats}`);
+  console.log(`  sats_per_gb:     ${config.satsPerGb}`);
+  console.log("──────────────────────────");
 
   if (!config.hostPubkey) {
     console.error("[agent] AGENT_HOST_PUBKEY not set — cannot announce");

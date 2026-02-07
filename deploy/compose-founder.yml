@@ -1,9 +1,59 @@
-# Founder stack — full protocol deployment.
+# Founder stack — full protocol deployment with real Lightning (regtest).
 # DocRef: MVP_PLAN:§What Hosts vs What You Host, §Node Kit
 #
-# Run: docker compose -f deploy/compose-founder.yml up
+# Prerequisites:
+#   1. Run scripts/gen-keys.sh to generate .env.local
+#   2. docker compose -f deploy/compose-founder.yml --env-file .env.local up --build
+#
+# Services: bitcoind → lnd → gateway + mint → coordinator → caddy
 
 services:
+  # ── Bitcoin (regtest) ──────────────────────────────────────────
+  bitcoind:
+    image: ruimarinho/bitcoin-core:26
+    command: >
+      bitcoind -regtest=1 -server=1 -txindex=1
+      -rpcbind=0.0.0.0 -rpcallowip=0.0.0.0/0
+      -rpcuser=rpc -rpcpassword=rpc
+      -fallbackfee=0.0002
+      -zmqpubrawblock=tcp://0.0.0.0:28332
+      -zmqpubrawtx=tcp://0.0.0.0:28333
+    volumes:
+      - bitcoin-data:/home/bitcoin/.bitcoin
+    healthcheck:
+      test: ["CMD", "bitcoin-cli", "-regtest", "-rpcuser=rpc", "-rpcpassword=rpc", "getblockchaininfo"]
+      interval: 2s
+      timeout: 2s
+      retries: 40
+
+  # ── Lightning (LND regtest) ────────────────────────────────────
+  lnd:
+    image: lightninglabs/lnd:v0.18.5-beta
+    depends_on:
+      bitcoind:
+        condition: service_healthy
+    command: >
+      lnd
+      --bitcoin.active --bitcoin.regtest
+      --bitcoin.node=bitcoind
+      --bitcoind.rpchost=bitcoind
+      --bitcoind.rpcuser=rpc --bitcoind.rpcpass=rpc
+      --bitcoind.zmqpubrawblock=tcp://bitcoind:28332
+      --bitcoind.zmqpubrawtx=tcp://bitcoind:28333
+      --noseedbackup
+      --rpclisten=0.0.0.0:10009
+      --restlisten=0.0.0.0:8080
+      --tlsextradomain=lnd
+      --tlsextraip=0.0.0.0
+    volumes:
+      - lnd-data:/root/.lnd
+    healthcheck:
+      test: ["CMD", "lncli", "--network=regtest", "getinfo"]
+      interval: 5s
+      timeout: 5s
+      retries: 30
+
+  # ── Gateway (HTTP origin, L402-gated blocks) ───────────────────
   gateway:
     build:
       context: ..
@@ -13,33 +63,51 @@ services:
     environment:
       GATEWAY_PORT: "3100"
       BLOCK_STORE_PATH: /data/blocks
-      LND_HOST: lnd:10009
+      LND_HOST: lnd:8080
+      LND_TLS_CERT_PATH: /lnd/tls.cert
+      LND_MACAROON_PATH: /lnd/data/chain/bitcoin/regtest/admin.macaroon
       MINT_URL: http://mint:3101
+      HOST_PUBKEY: ${HOST_PUBKEY}
+      MIN_REQUEST_SATS: ${MIN_REQUEST_SATS:-3}
+      SATS_PER_GB: ${SATS_PER_GB:-500}
+      GENESIS_TIMESTAMP_MS: ${GENESIS_TIMESTAMP_MS:-0}
     volumes:
       - block-data:/data/blocks
+      - lnd-data:/lnd:ro
     depends_on:
-      - lnd
-      - mint
+      lnd:
+        condition: service_healthy
+      mint:
+        condition: service_healthy
     healthcheck:
       test: ["CMD", "wget", "-q", "--spider", "http://localhost:3100/health"]
       interval: 10s
       timeout: 5s
       retries: 3
 
+  # ── Mint (receipt token signer — mint 1) ───────────────────────
   mint:
     build:
       context: ..
       dockerfile: apps/mint/Dockerfile
     environment:
       MINT_PORT: "3101"
-      MINT_PRIVATE_KEY_HEX: ${MINT_PRIVATE_KEY_HEX}
-      LND_HOST: lnd:10009
+      MINT_PRIVATE_KEY_HEX: ${MINT1_SK_HEX}
+      LND_HOST: lnd:8080
+      LND_TLS_CERT_PATH: /lnd/tls.cert
+      LND_MACAROON_PATH: /lnd/data/chain/bitcoin/regtest/admin.macaroon
+    volumes:
+      - lnd-data:/lnd:ro
+    depends_on:
+      lnd:
+        condition: service_healthy
     healthcheck:
       test: ["CMD", "wget", "-q", "--spider", "http://localhost:3101/health"]
       interval: 10s
       timeout: 5s
       retries: 3
 
+  # ── Coordinator (protocol state, Postgres-backed) ──────────────
   coordinator:
     build:
       context: ..
@@ -49,6 +117,10 @@ services:
     environment:
       COORDINATOR_PORT: "3102"
       DATABASE_URL: postgresql://dupenet:dupenet@postgres:5432/dupenet
+      MINT_PUBKEYS: ${MINT_PUBKEYS}
+      EPOCH_SCHEDULER_INTERVAL_MS: "60000"
+      EPOCH_SCHEDULER_SPOT_CHECKS: "true"
+      GENESIS_TIMESTAMP_MS: ${GENESIS_TIMESTAMP_MS:-0}
     depends_on:
       postgres:
         condition: service_healthy
@@ -56,8 +128,9 @@ services:
       test: ["CMD", "wget", "-q", "--spider", "http://localhost:3102/health"]
       interval: 10s
       timeout: 5s
-      retries: 3
+      retries: 5
 
+  # ── PostgreSQL ─────────────────────────────────────────────────
   postgres:
     image: postgres:16-alpine
     environment:
@@ -72,38 +145,26 @@ services:
       timeout: 5s
       retries: 5
 
-  lnd:
-    image: lightninglabs/lnd:v0.18.0-beta
-    command:
-      - --bitcoin.active
-      - --bitcoin.regtest
-      - --bitcoin.node=neutrino
-      - --noseedbackup
-      - --rpclisten=0.0.0.0:10009
-    volumes:
-      - lnd-data:/root/.lnd
-    healthcheck:
-      test: ["CMD", "lncli", "--network=regtest", "getinfo"]
-      interval: 10s
-      timeout: 5s
-      retries: 10
-
+  # ── Caddy (reverse proxy) ──────────────────────────────────────
   caddy:
     image: caddy:2-alpine
     ports:
       - "443:443"
       - "80:80"
     volumes:
-      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - ./Caddyfile.founder:/etc/caddy/Caddyfile:ro
       - caddy-data:/data
       - caddy-config:/config
     depends_on:
-      - gateway
-      - coordinator
+      gateway:
+        condition: service_healthy
+      coordinator:
+        condition: service_healthy
 
 volumes:
+  bitcoin-data:
+  lnd-data:
   block-data:
   pg-data:
-  lnd-data:
   caddy-data:
   caddy-config:

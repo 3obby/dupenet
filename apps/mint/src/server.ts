@@ -12,13 +12,29 @@
 
 import { fileURLToPath } from "node:url";
 import { resolve } from "node:path";
+import { existsSync } from "node:fs";
 import Fastify from "fastify";
 import { ReceiptSigner } from "./signer.js";
 import { config } from "./config.js";
 import type { LndClient } from "@dupenet/lnd-client";
+import { LndRestClient } from "@dupenet/lnd-client";
 
 export interface MintDeps {
   lndClient?: LndClient | null;
+}
+
+/** Try to create a real LND REST client from config, or return null (dev mode). */
+function createLndClient(): LndClient | null {
+  if (!config.lndMacaroonPath) return null;
+  if (!existsSync(config.lndMacaroonPath)) {
+    console.warn(`[mint] LND macaroon not found at ${config.lndMacaroonPath} — dev mode`);
+    return null;
+  }
+  return new LndRestClient({
+    host: config.lndHost,
+    macaroonPath: config.lndMacaroonPath,
+    tlsCertPath: config.lndTlsCertPath,
+  });
 }
 
 export async function buildApp(deps?: MintDeps) {
@@ -35,7 +51,7 @@ export async function buildApp(deps?: MintDeps) {
 
   // LND client for settlement verification (null = dev mode, sign unconditionally)
   const lndClient =
-    deps?.lndClient !== undefined ? deps.lndClient : null;
+    deps?.lndClient !== undefined ? deps.lndClient : createLndClient();
 
   app.get("/pubkey", async (_req, reply) => {
     if (!signer) return reply.status(503).send({ error: "no_key" });
@@ -98,6 +114,13 @@ if (
   process.argv[1] &&
   resolve(process.argv[1]) === fileURLToPath(import.meta.url)
 ) {
+  console.log("─── mint config ───");
+  console.log(`  port:         ${config.port}`);
+  console.log(`  lnd_host:     ${config.lndHost}`);
+  console.log(`  lnd_macaroon: ${config.lndMacaroonPath || "(none — dev mode)"}`);
+  console.log(`  has_key:      ${config.privateKeyHex ? "yes" : "NO (signing disabled)"}`);
+  console.log("────────────────────");
+
   const app = await buildApp();
   app.listen({ port: config.port, host: config.host }, (err) => {
     if (err) {

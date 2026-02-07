@@ -22,4 +22,6 @@ export const config = {
   hostPubkey: env("HOST_PUBKEY", ""),
   minRequestSats: parseInt(env("MIN_REQUEST_SATS", "3"), 10),
   satsPerGb: parseInt(env("SATS_PER_GB", "500"), 10),
+  /** Protocol genesis timestamp (ms). 0 = Unix epoch. Override for testing. */
+  genesisTimestampMs: parseInt(env("GENESIS_TIMESTAMP_MS", "0"), 10),
 } as const;

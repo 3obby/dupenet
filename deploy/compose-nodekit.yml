@@ -1,7 +1,7 @@
 # Node operator kit — minimal deployment for hosts.
 # DocRef: MVP_PLAN:§Node Kit
 #
-# Run: docker compose -f deploy/compose-nodekit.yml up
+# Run: docker compose -f deploy/compose-nodekit.yml --env-file .env.local up --build
 
 services:
   gateway:
@@ -13,7 +13,11 @@ services:
     environment:
       GATEWAY_PORT: "3100"
       BLOCK_STORE_PATH: /data/blocks
+      HOST_PUBKEY: ${HOST_PUBKEY}
       MINT_URL: ${MINT_URL:-http://mint.dupenet.example:3101}
+      MIN_REQUEST_SATS: ${MIN_REQUEST_SATS:-3}
+      SATS_PER_GB: ${SATS_PER_GB:-500}
+      # Nodekit gateway runs in dev mode (no local LND) — L402 handled by remote mint
     volumes:
       - block-data:/data/blocks
     healthcheck:
@@ -30,6 +34,13 @@ services:
       AGENT_GATEWAY_URL: http://gateway:3100
       AGENT_COORDINATOR_URL: ${COORDINATOR_URL:-http://coordinator.dupenet.example:3102}
       AGENT_HOST_PUBKEY: ${HOST_PUBKEY}
+      AGENT_HOST_PRIVATE_KEY_HEX: ${AGENT_HOST_PRIVATE_KEY_HEX}
+      AGENT_HOST_ENDPOINT: ${AGENT_HOST_ENDPOINT}
+      AGENT_MIN_REQUEST_SATS: ${MIN_REQUEST_SATS:-3}
+      AGENT_SATS_PER_GB: ${SATS_PER_GB:-500}
+      AGENT_POLL_INTERVAL_MS: ${AGENT_POLL_INTERVAL_MS:-60000}
+      AGENT_MIN_BOUNTY: ${AGENT_MIN_BOUNTY:-100}
+      AGENT_MAX_MIRRORS_PER_CYCLE: ${AGENT_MAX_MIRRORS_PER_CYCLE:-5}
     depends_on:
       gateway:
         condition: service_healthy
@@ -40,11 +51,12 @@ services:
       - "443:443"
       - "80:80"
     volumes:
-      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - ./Caddyfile.nodekit:/etc/caddy/Caddyfile:ro
       - caddy-data:/data
       - caddy-config:/config
     depends_on:
-      - gateway
+      gateway:
+        condition: service_healthy
 
 volumes:
   block-data:

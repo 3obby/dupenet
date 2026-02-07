@@ -36,7 +36,7 @@ import {
   HOST_REGISTER_EVENT,
   RECEIPT_SUBMIT_EVENT,
 } from "./event-log/schemas.js";
-import { currentEpoch, verifyEventSignature } from "@dupenet/physics";
+import { currentEpoch, setGenesisTimestamp, verifyEventSignature } from "@dupenet/physics";
 import { verifyReceiptV2, type ReceiptV2Input } from "@dupenet/receipt-sdk";
 import { settleEpoch } from "./views/epoch-settlement.js";
 import {
@@ -59,6 +59,11 @@ export interface CoordinatorDeps {
 }
 
 export async function buildApp(deps?: CoordinatorDeps) {
+  // Set protocol genesis (before any epoch computation)
+  if (config.genesisTimestampMs > 0) {
+    setGenesisTimestamp(config.genesisTimestampMs);
+  }
+
   const prisma = deps?.prisma ?? new PrismaClient();
   const app = Fastify({ logger: true });
 
@@ -465,6 +470,15 @@ if (
   process.argv[1] &&
   resolve(process.argv[1]) === fileURLToPath(import.meta.url)
 ) {
+  console.log("─── coordinator config ───");
+  console.log(`  port:              ${config.port}`);
+  console.log(`  database_url:      ${config.databaseUrl.replace(/\/\/.*@/, "//***@")}`);
+  console.log(`  mint_pubkeys:      ${config.mintPubkeys.length > 0 ? config.mintPubkeys.map(k => k.slice(0, 12) + "…").join(", ") : "(none)"}`);
+  console.log(`  epoch_scheduler:   ${config.epochSchedulerIntervalMs > 0 ? `${config.epochSchedulerIntervalMs}ms` : "disabled"}`);
+  console.log(`  spot_checks:       ${config.epochSchedulerSpotChecks}`);
+  console.log(`  genesis_ts:        ${config.genesisTimestampMs || "(default: 0)"}`);
+  console.log("───────────────────────────");
+
   const app = await buildApp();
 
   app.listen({ port: config.port, host: config.host }, (err) => {
