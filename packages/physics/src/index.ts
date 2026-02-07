@@ -53,6 +53,16 @@ export {
   type EpochGroup,
 } from "./epoch-aggregation.js";
 
+// Availability scoring (pure check result → score)
+export {
+  computeAvailabilityScore,
+  AVAILABILITY_WINDOW_EPOCHS,
+  AVAILABILITY_TRUSTED_THRESHOLD,
+  INACTIVE_ZERO_EPOCHS,
+  type CheckResult,
+  type AvailabilityAssessment,
+} from "./availability.js";
+
 // All schemas
 export * from "./schemas/index.js";
 

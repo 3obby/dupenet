@@ -16,6 +16,8 @@
  *   POST /pin            — create pin contract
  *   GET  /pin/:id        — pin status + active hosts + epoch proofs
  *   POST /pin/:id/cancel — cancel pin, return remaining budget minus fee
+ *   POST /hosts/check    — trigger spot-checks for all hosts
+ *   GET  /hosts/:pubkey/checks — view check history + availability score
  *   GET  /health         — health check (verifies DB connectivity)
  */
 
@@ -42,9 +44,16 @@ import {
   validatePinInput,
   type CreatePinInput,
 } from "./views/pin-contracts.js";
+import {
+  runAllChecks,
+  getHostChecks,
+  type SpotCheckFetcher,
+} from "./views/availability.js";
+import { computeAvailabilityScore } from "@dupenet/physics";
 
 export interface CoordinatorDeps {
   prisma?: PrismaClient;
+  spotCheckFetcher?: SpotCheckFetcher;
 }
 
 export async function buildApp(deps?: CoordinatorDeps) {
@@ -300,6 +309,28 @@ export async function buildApp(deps?: CoordinatorDeps) {
         return reply.status(status).send(result);
       }
       return reply.send({ ok: true, ...result });
+    },
+  );
+
+  // ── Availability / Spot-checks ──────────────────────────────────
+  app.post("/hosts/check", async (_req, reply) => {
+    const summary = await runAllChecks(prisma, deps?.spotCheckFetcher);
+    return reply.send({ ok: true, ...summary });
+  });
+
+  app.get<{ Params: { pubkey: string } }>(
+    "/hosts/:pubkey/checks",
+    async (req, reply) => {
+      const { pubkey } = req.params;
+      const checks = await getHostChecks(prisma, pubkey);
+      const epoch = currentEpoch();
+      const assessment = computeAvailabilityScore(checks, epoch);
+
+      return reply.send({
+        pubkey,
+        ...assessment,
+        checks: checks.slice(0, 50), // last 50 checks
+      });
     },
   );
 

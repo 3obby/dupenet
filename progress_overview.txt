@@ -23,7 +23,7 @@ PHASE 1: BLOB UTILITY (Layer A)
 [x] HEAD /asset/:root                returns size, kind, mime headers
 [x] GET /pricing                     returns PricingV1
 [x] GET /health                      gateway health check
-[x] Physics unit tests               canonical, cid, chunker, merkle, reward, epoch-aggregation (6 suites, vitest)
+[x] Physics unit tests               canonical, cid, chunker, merkle, reward, epoch-aggregation, availability (7 suites, vitest)
 [x] Gateway integration test          PUT /block xN -> PUT /file -> PUT /asset -> GET -> reassemble -> verify (7 tests)
 [ ] EXIF/metadata stripping           strip before hashing (mentioned in spec, not implemented)
 [ ] Runtime schema validation         TypeBox schemas defined but Value.Check not called on ingest
@@ -56,10 +56,15 @@ PHASE 1: BLOB UTILITY (Layer A)
 [~] Node-agent basic structure         polls coordinator, announces, mirrors (mostly stubs)
 [~] Mirror agent                       mirrorCid() implemented, findProfitableTargets() returns []
 [~] Directory announcement             announceHost() works, announceServe() is TODO
+[x] Availability score tracking        computeAvailabilityScore() in physics + updateAllScores() in coordinator
+[x] Status lifecycle                   PENDING->TRUSTED (score>=0.6), TRUSTED->DEGRADED (score<0.6), ->INACTIVE (score==0)
+[x] Spot-check responder              GET /spot-check/:cid on gateway (verifies hash, no L402, no bytes)
+[x] Spot-check runner                 spotCheckHost(), runAllChecks() in coordinator (injectable fetcher)
+[x] SpotCheck Prisma model            hostPubkey, cid, epoch, passed, latencyMs, error
+[x] POST /hosts/check                 triggers spot-checks for all active hosts, updates scores
+[x] GET /hosts/:pubkey/checks         returns check history + availability score + recommended status
+[x] Availability tests                9 physics + 12 coordinator tests (scoring, transitions, spot-check runner)
 [ ] Stake locking via LND              TODO: verify stake payment
-[ ] Availability score tracking        formula in physics, not wired to coordinator
-[ ] Status lifecycle                   PENDING -> TRUSTED -> DEGRADED -> INACTIVE not enforced
-[ ] Health check responder             no spot-check endpoint in node-agent
 [ ] CID selection agent                bounty watcher stub, no real bounty feed query
 
 ## Step 4 — Receipt Verification SDK
@@ -122,6 +127,7 @@ INTEGRATION / E2E
 [x] Receipt round-trip test             construct valid receipt (PoW + mint sig + client sig) -> verifyReceiptV2 passes
 [x] Epoch settlement test              mock Prisma: eligible/ineligible hosts, bounty drain, idempotency, score split
 [x] Pin contract test                  mock Prisma: create/status/cancel, drain rate, exhaustion, validation (22 tests)
+[x] Availability test                  mock Prisma + mock fetcher: spot-check, scoring, transitions (12 tests)
 
 SPRINT ORDER (recommended)
 ---------------------------

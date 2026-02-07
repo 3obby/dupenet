@@ -78,7 +78,7 @@ export async function buildApp(deps?: GatewayDeps) {
   fileRoutes(app, store);
   assetRoutes(app);
   pricingRoutes(app);
-  healthRoutes(app);
+  healthRoutes(app, store);
 
   return app;
 }

@@ -122,3 +122,19 @@ model PinContract {
   @@index([status])
   @@map("pin_contract")
 }
+
+// ── Spot Checks (availability monitoring) ──────────────────────────
+
+model SpotCheck {
+  id          Int      @id @default(autoincrement())
+  hostPubkey  String
+  cid         String
+  epoch       Int
+  passed      Boolean
+  latencyMs   Int?
+  error       String?
+  checkedAt   DateTime @default(now())
+
+  @@index([hostPubkey, epoch])
+  @@map("spot_check")
+}
