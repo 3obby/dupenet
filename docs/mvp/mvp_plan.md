@@ -972,6 +972,22 @@ Founder operates directory, receipt mints (2-3 independent keypairs), receipt ag
 
 Founder operates default services. Architecture permits replacement. MVP does not exercise that.
 
+### Infrastructure Partners (Jurisdictional Fragmentation)
+
+No single government seizure should kill more than one mint. Operators chosen for: own infrastructure (not resellers of US companies), Bitcoin/crypto payment, non-14-Eyes jurisdiction, track record under pressure.
+
+| Operator | Jurisdiction | Role (MVP) | Notes |
+|----------|-------------|------------|-------|
+| FlokiNET | **Iceland** | Gateway + Coordinator + LND + Mint 1 | Own DC, since 2012, hosted WikiLeaks infra. BTC accepted, no KYC. IMMI press freedom laws. |
+| Zergrush | **Romania** | Mint 2 | Own DC in Bucharest, 15+ cryptos. RO constitutional court struck down EU data retention twice. |
+| Shinjiru | **Malaysia** | Mint 3 | Own DC in KL since 1998. ASEAN/non-aligned, no 14-Eyes. BTC accepted. |
+| COIN.HOST | **Switzerland** | Backup gateway / future coordinator | Own DC in Zurich, ISO 27001, since 2011. BTC accepted. Not EU, not 14-Eyes, constitutional privacy. |
+| VPSBG.eu | **Bulgaria** | DNS / monitoring / future gateway | Own hardware, self-funded since 2013. Accepts **Lightning**. Ignores DMCA, allows Tor exits. |
+
+3 continents, 5 jurisdictions, 5 independent operators. ~$46/mo total at full deployment.
+
+**MVP launch (2 servers):** FlokiNET Iceland (main stack) + one remote mint. Scale to 3 mints across 3 jurisdictions before public announcement.
+
 ---
 
 ## Directory Format

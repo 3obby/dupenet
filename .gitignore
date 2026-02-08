@@ -8,6 +8,11 @@ dist/
 .env.local
 .env.*.local
 
+# deployment secrets / credentials
+deploy/secrets/
+*.secrets.txt
+vps-creds*.txt
+
 # IDE
 .vscode/
 !.vscode/settings.json

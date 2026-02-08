@@ -1,0 +1,155 @@
+# Production founder stack — signet Lightning, no test services.
+# DocRef: MVP_PLAN:§Infrastructure Partners, §What Hosts vs What You Host
+#
+# Prerequisites:
+#   1. Run scripts/gen-keys.sh to generate .env.local (if not already done)
+#   2. Create LND wallet: docker compose -f deploy/compose-production.yml run --rm lnd lncli --network=signet create
+#   3. docker compose -f deploy/compose-production.yml --env-file .env.local up -d --build
+#
+# Services: lnd → gateway + mint1 → coordinator → caddy
+# No bitcoind (signet uses public peers), no lnd-bob (no E2E testing)
+
+services:
+  # ── Lightning (LND signet) ─────────────────────────────────────
+  lnd:
+    image: lightninglabs/lnd:v0.18.5-beta
+    restart: unless-stopped
+    command: >
+      lnd
+      --bitcoin.active --bitcoin.signet
+      --bitcoin.node=bitcoind
+      --bitcoind.rpchost=${LND_BITCOIND_HOST:-mempool.space}
+      --bitcoind.rpcuser=${LND_BITCOIND_USER:-x}
+      --bitcoind.rpcpass=${LND_BITCOIND_PASS:-x}
+      --bitcoind.estimatemode=ECONOMICAL
+      --rpclisten=0.0.0.0:10009
+      --restlisten=0.0.0.0:8080
+      --tlsextradomain=lnd
+      --tlsextraip=0.0.0.0
+      --alias=ocdn-founder
+      --wallet-unlock-password-file=/root/.lnd/wallet_password
+    volumes:
+      - lnd-data:/root/.lnd
+    healthcheck:
+      test: ["CMD", "lncli", "--network=signet", "getinfo"]
+      interval: 10s
+      timeout: 10s
+      retries: 30
+    ports:
+      - "9735:9735"   # P2P Lightning
+
+  # ── Gateway (HTTP origin, L402-gated blocks) ───────────────────
+  gateway:
+    build:
+      context: ..
+      dockerfile: apps/gateway/Dockerfile
+    restart: unless-stopped
+    environment:
+      GATEWAY_PORT: "3100"
+      BLOCK_STORE_PATH: /data/blocks
+      LND_HOST: lnd:8080
+      LND_TLS_CERT_PATH: /lnd/tls.cert
+      LND_MACAROON_PATH: /lnd/data/chain/bitcoin/signet/admin.macaroon
+      MINT_URL: http://mint1:3101
+      HOST_PUBKEY: ${HOST_PUBKEY}
+      MIN_REQUEST_SATS: ${MIN_REQUEST_SATS:-3}
+      SATS_PER_GB: ${SATS_PER_GB:-500}
+      GENESIS_TIMESTAMP_MS: ${GENESIS_TIMESTAMP_MS:-0}
+    volumes:
+      - block-data:/data/blocks
+      - lnd-data:/lnd:ro
+    depends_on:
+      lnd:
+        condition: service_healthy
+      mint1:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "wget", "-q", "--spider", "http://localhost:3100/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+
+  # ── Mint 1 (receipt token signer — co-located) ─────────────────
+  mint1:
+    build:
+      context: ..
+      dockerfile: apps/mint/Dockerfile
+    restart: unless-stopped
+    environment:
+      MINT_PORT: "3101"
+      MINT_PRIVATE_KEY_HEX: ${MINT1_SK_HEX}
+      LND_HOST: lnd:8080
+      LND_TLS_CERT_PATH: /lnd/tls.cert
+      LND_MACAROON_PATH: /lnd/data/chain/bitcoin/signet/admin.macaroon
+    volumes:
+      - lnd-data:/lnd:ro
+    depends_on:
+      lnd:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "wget", "-q", "--spider", "http://localhost:3101/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+
+  # ── Coordinator (protocol state, Postgres-backed) ──────────────
+  coordinator:
+    build:
+      context: ..
+      dockerfile: apps/coordinator/Dockerfile
+    restart: unless-stopped
+    environment:
+      COORDINATOR_PORT: "3102"
+      DATABASE_URL: postgresql://${PG_USER:-ocdn}:${PG_PASS:-ocdn_prod_2026}@postgres:5432/${PG_DB:-ocdn}
+      MINT_PUBKEYS: ${MINT_PUBKEYS}
+      EPOCH_SCHEDULER_INTERVAL_MS: "60000"
+      EPOCH_SCHEDULER_SPOT_CHECKS: "true"
+      GENESIS_TIMESTAMP_MS: ${GENESIS_TIMESTAMP_MS:-0}
+    depends_on:
+      postgres:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "wget", "-q", "--spider", "http://localhost:3102/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # ── PostgreSQL ─────────────────────────────────────────────────
+  postgres:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${PG_USER:-ocdn}
+      POSTGRES_PASSWORD: ${PG_PASS:-ocdn_prod_2026}
+      POSTGRES_DB: ${PG_DB:-ocdn}
+    volumes:
+      - pg-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${PG_USER:-ocdn}"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  # ── Caddy (reverse proxy + automatic HTTPS) ────────────────────
+  caddy:
+    image: caddy:2-alpine
+    restart: unless-stopped
+    ports:
+      - "443:443"
+      - "80:80"
+    volumes:
+      - ./Caddyfile.production:/etc/caddy/Caddyfile:ro
+      - caddy-data:/data
+      - caddy-config:/config
+    depends_on:
+      gateway:
+        condition: service_healthy
+      coordinator:
+        condition: service_healthy
+
+volumes:
+  lnd-data:
+  block-data:
+  pg-data:
+  caddy-data:
+  caddy-config:

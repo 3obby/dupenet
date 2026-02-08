@@ -1,0 +1,58 @@
+# Production reverse proxy — automatic HTTPS via Let's Encrypt.
+# Caddy handles TLS cert provisioning and renewal automatically.
+
+ocdn.is {
+  # ── Gateway (blob serving) ──────────────────────────────────
+  handle /block/* {
+    reverse_proxy gateway:3100
+  }
+  handle /file/* {
+    reverse_proxy gateway:3100
+  }
+  handle /asset/* {
+    reverse_proxy gateway:3100
+  }
+  handle /pricing {
+    reverse_proxy gateway:3100
+  }
+  handle /served {
+    reverse_proxy gateway:3100
+  }
+  handle /spot-check/* {
+    reverse_proxy gateway:3100
+  }
+
+  # ── Coordinator (protocol state) ────────────────────────────
+  handle /tip {
+    reverse_proxy coordinator:3102
+  }
+  handle /bounty/* {
+    reverse_proxy coordinator:3102
+  }
+  handle /directory {
+    reverse_proxy coordinator:3102
+  }
+  handle /host/* {
+    reverse_proxy coordinator:3102
+  }
+  handle /hosts/* {
+    reverse_proxy coordinator:3102
+  }
+  handle /receipt/* {
+    reverse_proxy coordinator:3102
+  }
+  handle /epoch/* {
+    reverse_proxy coordinator:3102
+  }
+  handle /pin/* {
+    reverse_proxy coordinator:3102
+  }
+
+  # ── Health ──────────────────────────────────────────────────
+  handle /health {
+    reverse_proxy gateway:3100
+  }
+
+  # ── Default ─────────────────────────────────────────────────
+  respond "ocdn.is — content that can't be killed" 200
+}

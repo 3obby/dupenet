@@ -215,21 +215,27 @@ Exit: `dupenet upload cat.jpg` → prints asset_root URL → `dupenet fetch <roo
 ## Sprint 8 — Real deployment (founder stack on VPS)
 
 The founder stack moves from Docker-on-laptop to a public server.
-DocRef: MVP_PLAN:§Node Kit, §What Hosts vs What You Host, §Bootstrap Sequence
+DocRef: MVP_PLAN:§Node Kit, §What Hosts vs What You Host, §Bootstrap Sequence, §Infrastructure Partners
 
-[ ] VPS provisioning                    BTC-native provider (SporeStack or similar); 2+ GB RAM, SSD
-[ ] Domain + DNS                        point domain at VPS (e.g. gateway.dupenet.dev)
-[ ] Caddyfile.founder → real domain     automatic HTTPS via Caddy
-[ ] LND mainnet (or signet)             real Lightning node; fund with bootstrap sats
-    - decision: start on signet (test sats) or mainnet (real sats)?
-    - if mainnet: small initial fund (~100k sats), channel to well-connected node
-[ ] 2-3 mint instances                  separate keypairs, separate processes (can share VPS for MVP)
+[x] VPS provisioning                    FlokiNET Romania (4 CPU, 4GB RAM, 90GB NVMe, 9TB BW, DDoS prot.)
+[x] Domain acquired                     ocdn.is (ISNIC Iceland — ccTLD, seizure-proof, WHOIS privacy)
+[~] DNS A record                        ocdn.is → 185.165.169.8 (pending ISNIC activation)
+[x] compose-production.yml              signet LND, hardened Postgres, restart policies, no regtest services
+[x] Caddyfile.production                ocdn.is domain, automatic HTTPS via Caddy/Let's Encrypt
+[x] scripts/deploy.sh                   one-shot server setup (Docker, git, keys, firewall)
+[x] scripts/backup.sh                   Postgres dump + LND SCB, 14-day retention, cron-ready
+[x] .env.example updated                production DB creds, signet macaroon paths, ocdn.is endpoint
+[ ] Server access                       VPS provisioned, awaiting Proxmox lock clear (FlokiNET support)
+[ ] Docker + stack deploy               deploy.sh → compose-production.yml up
+[ ] LND signet wallet                   create wallet, fund via signet faucet, open channel
+    - decision: signet first, flip to mainnet when confident
+[ ] Mint 1 operational                  co-located on founder VPS (Romania)
+[ ] Mint 2 (remote)                     separate VPS in Malaysia (Shinjiru) or Switzerland (COIN.HOST)
+[ ] Mint 3 (remote)                     third jurisdiction — add before public announcement
 [ ] Seed content upload                 founder uploads Tier 1 + Tier 2 content via CLI
-    - Epstein docs, FOIA releases, deplatformed archives (per Bootstrap Sequence)
-    - or: start with utility content (open-source mirrors, datasets)
-[ ] Shareable URLs                      https://gateway.dupenet.dev/asset/<root> returns content
+[ ] Shareable URLs                      https://ocdn.is/asset/<root> returns content
 [ ] Monitoring                          uptime check, LND balance alerts, disk usage
-[ ] Backup strategy                     Postgres dump schedule, LND channel backups (SCB)
+[ ] Backup cron                         schedule scripts/backup.sh every 6h
 
 Exit: public URL serves real content via L402. External client can `dupenet fetch` from anywhere.
 
