@@ -13,10 +13,11 @@
 3. **Infrastructure is a commodity** - Hosts compete like gas stations, self-select profitable content
 4. **Payment streams are separate** - Bounty pays for availability, egress pays for bandwidth. A fetch that generates a receipt counts toward both (explicit demand subsidy at cost, not accidental double-counting)
 5. **Visibility is derived, not curated** - Three separate layers: Directory = host routing, Topic = content organization, Signals = visibility ranking. No layer controls another.
+6. **Hosts serve bytes; materializers serve metadata** - Same L402 economics, same market dynamics. Materializers ingest events, build views, serve queries. The coordinator is the first materializer, not a special role.
 
 ### Trust Assumptions (MVP)
 
-- Founder operates default directory, aggregator, receipt mints, provisioning
+- Founder operates default directory, aggregator, receipt mints, provisioning, materializer
 - Receipts accepted from founder mints only
 - Architecture permits replacement at every layer; MVP does not exercise that
 - Goal is to prove market dynamics, not decentralization
@@ -41,6 +42,7 @@ The protocol serves two audiences. Layer A is infrastructure other platforms con
 - Market quoting: host profitability thresholds enable client-side supply curve estimation
 - Free preview tier: thumbnails/excerpts served without L402 to drive paid consumption
 - Web content surface: landing pages that render content + instrument cluster + Fortify button
+- Materializers: operators that ingest events + serve queries (same L402 economics as hosts; coordinator is the first materializer)
 
 Layer A.1 does not require Layer B's social features (vine allocation, harmonic distribution, paid inbox). It sits on top of Layer A's raw blobs + economics and makes them accessible to humans and discoverable by peers. Every Layer A.1 artifact is a signed event referencing CIDs — the coordinator materializes a default view, but any peer can materialize the same state from the event stream.
 
@@ -82,6 +84,7 @@ External adopters use Layer A as replaceable infrastructure. They store `asset_r
 | **PinContract** | hash | `status`, `budget_sats`, `drain_rate` | A |
 | **ContentAnnounce** | SHA256(canonical(ContentAnnounceV1)) | None (immutable) | A.1 |
 | **AssetList** | SHA256(canonical(AssetListV1)) | None (immutable) | A.1 |
+| **Materializer** | pubkey | `endpoint`, `pricing`, `coverage` | A.1 |
 
 ### Entity Schemas
 
@@ -94,9 +97,15 @@ FileManifestV1 {
   chunk_size: u32         # default 262144 (256KiB)
   size: u64               # total file size in bytes
   blocks: [bytes32]       # ordered BlockCIDs = SHA256(block_bytes)
-  merkle_root: bytes32    # SHA256(canonical(ordered block CIDs))
+  merkle_root: bytes32    # MerkleRoot(block_cids) — real binary Merkle tree (leaf hash + pair hash)
   mime: string?
 }
+# merkle_root uses the same binary Merkle tree as StateSnapshotV1:
+#   leaf = SHA256(0x00 || block_cid)
+#   node = SHA256(0x01 || left || right)
+#   odd leaf promoted (no duplication)
+# Enables: inclusion proofs (client verifies "block N is in this manifest" in O(log N)),
+#          streaming verification, partial block validation without full manifest download.
 
 FileRefV1 {
   file_root: bytes32      # SHA256(canonical(FileManifestV1))
@@ -240,6 +249,34 @@ PinContractV1 {
 # Budget tops up bounty[asset_root]; drain_rate caps epoch payout.
 # Periodic proof = EpochSummary (already exists) filtered to pinned asset_root.
 # Platforms treat this as "pay for durability" without understanding vine/harmonic internals.
+#
+# SLA semantics (MVP: best-effort):
+#   - Pin is best-effort. No guarantee min_copies or regions[] can be satisfied.
+#   - If min_copies unmet for UNMET_THRESHOLD_EPOCHS (default 6) consecutive epochs:
+#     client may cancel with full remaining budget refund (no PIN_CANCEL_FEE).
+#   - Regions are soft constraints: client may sign an amendment relaxing regions[]
+#     without cancelling the pin (PinAmendmentV1 { pin_id, new_regions, sig }).
+#   - Alerts: coordinator notifies client when copies < min_copies (webhook or poll).
+#   - Post-MVP: "strict" SLA tier with automatic refund on unmet constraints.
+
+MaterializerV1 {
+  pubkey: bytes32            # operator identity
+  endpoint: string           # query base URL
+  ingest_endpoint: string    # POST /event target
+  pricing: MaterializerPricingV1
+  coverage: [string]?        # event kinds indexed (null = all)
+  last_seen: u64
+}
+
+MaterializerPricingV1 {
+  sats_per_event_ingest: u64  # cost to index a submitted event (0 = free, rate-limited)
+  sats_per_query: u64         # cost per search/signal query (0 = free tier)
+  free_query_types: [string]? # endpoints served free (e.g. ["content/recent", "bounty"])
+}
+# Materializers are metadata hosts: ingest events (like PUT /block), serve queries (like GET /block).
+# Same L402 pattern, same market dynamics, same directory discovery.
+# MVP: founder materializer, free ingest (rate-limited), free queries.
+# Post-MVP: multiple materializers compete on coverage, freshness, query quality, price.
 
 ContentAnnounceV1 {
   version: u8               # schema version
@@ -625,7 +662,7 @@ Archive mode enables participation without port forwarding. Simplest onboarding 
 ### Staking
 
 ```
-OPERATOR_STAKE = 2,100 sats (refundable)
+OPERATOR_STAKE = 2,100 sats (deposited with coordinator — custodial in MVP)
 UNBONDING_PERIOD = 7 days
 ```
 
@@ -633,6 +670,8 @@ UNBONDING_PERIOD = 7 days
 - Sybil resistance: 1000 fake nodes costs ~$1500
 - Fraud accountability: serving wrong bytes loses stake
 - Commitment signal: filters short-term opportunists
+
+**MVP trust assumption**: Stake is deposited via LN payment to the coordinator, who custodies it. "Locked" means "coordinator promises to return it after unbonding." This is the same trust model as all other founder-operated services (§Trust Assumptions). Post-MVP: move to on-chain UTXO, federation, or DLC-based escrow for real non-custodial locking.
 
 Stake is only at risk for cryptographic fraud (see Enforcement above). Availability issues affect earnings, not capital.
 
@@ -728,6 +767,50 @@ Export/import policy JSON
 
 ---
 
+## Client Safety Layer (Optional, Local)
+
+Mirrors the operator content policy model (§Operator Content Policy) but applied at the client side. No protocol changes — purely local policy. Warn and inform, never block by default.
+
+### Safety Layers (Ordered by Fetch Phase)
+
+| Phase | Mechanism | Default |
+|-------|-----------|---------|
+| **Pre-fetch** | MIME-type gate: warn on executables/scripts from `AssetRootV1.meta` | Warn, don't block |
+| **Pre-fetch** | Publisher signal display: tenure, receipts, flags from §Author Signals | Show, don't gate |
+| **Pre-fetch** | CID denylist check (attester-driven, same as operator model) | Check if subscribed |
+| **Post-fetch** | SHA256 verification (`SHA256(bytes) == CID`) | Always (already in spec) |
+| **Post-fetch** | Magic bytes vs declared MIME | Always |
+| **Post-fetch** | Known-good list check (signed `AssetListV1` from project = release manifest) | Check if available |
+| **Post-fetch** | MIME mismatch hard warning ("declared JPEG, actually EXE") | Always |
+
+### Client Policy Schema
+
+```
+ClientPolicyV1 {
+  attester_follow: [pubkey]     # same attester model as operator (§Attestation-Driven Quarantine)
+  mime_warn: [string]           # MIME prefixes that trigger pre-fetch warning (default: ["application/x-executable", "application/x-sh"])
+  mime_block: [string]          # MIME prefixes that block fetch (empty by default; user opts in)
+  trusted_publishers: [pubkey]  # auto-allow from these pubkeys (no warnings)
+  threshold: {
+    min_attesters: u8           # require N attesters before acting (default: 2)
+    categories: [enum]          # which RefusalV1.reason values to act on (default: [MALWARE, ILLEGAL])
+  }
+}
+```
+
+Same format as operator policy JSON — importable/exportable, same attester follow pattern. A user can import an operator's policy file and apply it client-side.
+
+### What This Does NOT Do
+
+- **No server-side scanning**: hosts serve ciphertext; scanning requires decryption keys hosts don't have.
+- **No global blocklist**: every list is a censorship vector. All lists are opt-in, local.
+- **No OS-level sandboxing**: if you execute arbitrary downloaded binaries, that's your OS's job.
+- **No content rating/classification**: that's moderation, not infrastructure.
+
+Encrypted blobs (§Private Media) are opaque to attesters — denylist packs only work for known-flagged CIDs of unencrypted content.
+
+---
+
 ## Egress Pricing (Market Decides)
 
 Hosts set their own prices. Three knobs, everything else derived.
@@ -740,9 +823,14 @@ PricingV1 {
   sats_per_gb: u64         # normal bandwidth rate
   burst_sats_per_gb: u64   # surge price when busy (optional)
   min_bounty_sats: u64?    # profitability threshold: min bounty pool to mirror a CID (optional)
+  sats_per_gb_month: u64?  # storage cost signal: host's cost to store 1 GB for 1 month
 }
 # min_bounty_sats enables market-based quoting: clients sample host thresholds
 # to estimate how many copies a given bounty level will attract.
+# sats_per_gb_month enables durability estimation: client computes
+#   (bounty - egress_drain) / (storage_cost * size_gb) = months sustained.
+# Even if only used locally for host profitability calculation initially,
+# publishing it lets clients estimate long-tail content sustainability.
 ```
 
 ### Charge Formula
@@ -786,6 +874,12 @@ Two mechanisms (host chooses):
 2. **Size threshold**: any `GET /block/{cid}` where `block_size ≤ FREE_PREVIEW_MAX_BYTES` served free
 
 Rationale: a 10 KiB JPEG thumbnail costs negligible bandwidth but 6× increases the probability of a paid fetch of the full content. Free previews are loss leaders that drive the L402 revenue loop. Hosts who don't want to serve free previews simply don't opt in — pricing is local.
+
+**Rate limiting (MUST if free preview enabled)**:
+- Per-IP token bucket: 60 requests/min burst, 10 requests/min sustained
+- Founder hosts: CDN cache (Cloudflare/BunnyCDN) in front of preview endpoints; CDN handles rate limiting natively
+- Optional: proof-of-work per free request (lightweight, ~50ms; deters scripted abuse without blocking humans)
+- Hosts MAY disable free preview entirely (pricing is local)
 
 ### Client Behavior (SHOULD)
 
@@ -991,6 +1085,20 @@ For ranking, weight receipts by:
 
 Wash trading is self-limiting: profitable only when bounty is high AND real demand is absent — a narrow, unstable band. At scale, self-farming is demand subsidy at cost.
 
+### Receipt Privacy
+
+Receipt submission is opt-in (§Fetch Flow step 7). Casual readers pay L402, get bytes, leave — no receipt exists, no protocol-level tracking. Privacy exposure for non-submitters: host sees the request (same as any website), LN routing sees payment flow (same as any Lightning purchase).
+
+For clients who opt into receipt submission, `ReceiptV2` binds `client_pubkey` to content consumed (`block_cid`, `file_root`, `asset_root`), host, epoch, and payment. A persistent `client_pubkey` across submissions creates a consumption history visible to the aggregator (MVP: founder) and potentially public (if receipts published for L4 self-verifying state).
+
+**Mitigation: clients SHOULD use ephemeral pubkeys for receipt submission.** Generate a one-time Ed25519 keypair per receipt batch. This breaks cross-session linkage without changing the receipt schema.
+
+**Why this doesn't weaken anti-sybil**: `client_pubkey` identity was never the hard defense. Key generation is free — any attacker already bypasses PoW difficulty escalation by rotating keys. The load-bearing anti-sybil mechanisms are economic (each receipt costs real L402 sats + requires real `receipt_token` from mint + requires real `response_hash` from fetched bytes). These hold regardless of pubkey persistence. `RECEIPT_MIN_UNIQUE` (3 distinct pubkeys) is a tripwire for lazy self-farmers, not a wall — three throwaway keypairs cost zero.
+
+**Signals that resist sybils without client identity**: payment diversity (distinct `payment_hash` from distinct LN flows — requires real liquidity), temporal spread (receipts across epochs vs burst), interaction graph breadth (real users touch many CIDs/hosts; puppets are narrow), total sats spent (economic cost regardless of identity).
+
+**MVP trust point**: the aggregator sees all submitted receipts. Same custodial trust assumption as stake, mints, directory. Post-MVP, permissionless aggregation (L5) lets clients choose aggregators — no single aggregator has the complete picture. Blinded/bearer receipt variants (Cashu-style) are the long-term direction for zero-knowledge demand proofs; not needed while aggregator is already a trusted coordinator.
+
 ---
 
 ## Node Kit (Target: Raspberry Pi)
@@ -1081,12 +1189,13 @@ No single government seizure should kill more than one mint. Operators chosen fo
 DirectoryV1 {
   publisher: pubkey
   hosts: [{ pubkey, endpoint, pricing: PricingV1, last_seen: u64, regions: [string], refusals_cid?: hash }]
+  materializers: [MaterializerV1]  # metadata hosts — same discovery as blob hosts
   timestamp: u64
   sig: signature
 }
 ```
 
-`refusals_cid` links to operator's RefusalV1 feed. Client filters before routing.
+`refusals_cid` links to operator's RefusalV1 feed. Client filters before routing. `materializers[]` lists metadata hosts that ingest events and serve queries — clients choose a set (like DNS resolvers or Nostr relays).
 
 ---
 
@@ -1111,14 +1220,24 @@ All events share: `version: u8`, `from: pubkey`, `timestamp: u64`, `sig: signatu
 
 ### Propagation Model
 
+Propagation and materialization are separate jobs with separate economics:
+
+- **Relays** propagate events (gossip, Nostr). Low margin, high volume, commodity.
+- **Materializers** ingest from relays, build views, serve queries. Higher margin, value-added, competitive.
+
+A materializer going down doesn't stop event propagation. A relay going down doesn't stop query serving. Same resilience principle as separating blob storage (hosts) from the directory.
+
 ```
-MVP:     Events flow via HTTP to coordinator (POST /tip, POST /content/announce, etc.)
-         Coordinator stores + materializes views.
-         Coordinator is one materializer, not the authority.
+MVP:     Events flow via HTTP to founder materializer (POST /tip, POST /content/announce, etc.)
+         Founder materializer stores + materializes views.
+         Founder materializer is one operator, not the authority — same as founder hosts.
 
 Future:  Events published to Nostr relays (NIP-compatible kind numbers).
-         Any peer subscribes, catches up on history, materializes local views.
-         Coordinator becomes optional cache.
+         Multiple materializers subscribe to relays, ingest events, serve queries.
+         Clients choose a materializer set (like DNS resolvers / Nostr relays).
+         Materializers compete on coverage, freshness, query quality, price.
+         Economic model: ingest fees from publishers (POST /event → L402) +
+                         query fees from consumers (GET /content → L402).
          (Already designed for in L2 + L4 of Longevity section.)
 ```
 
@@ -1827,6 +1946,24 @@ Layer B success criteria (attention pricing, discovery, graph accumulation, line
 
 ---
 
+## Post-MVP Assessment Queue
+
+Items deferred from external review. Assess after launch once real traffic/host data exists.
+
+### Discovery-Event Spam Pricing (#2)
+
+Layer A.1 events (ContentAnnounce, AssetList) have no cost — potential spam surface. MVP mitigates via coordinator-side rate limits (per-pubkey, per-IP). Post-MVP, decide whether event ingest becomes a paid market (402-gated POST /event) or stays rate-limited with PoW. The decision interacts with the materializer market design: if materializers earn from ingest fees, paid events fund the decentralized discovery layer. If rate-limited, materializers need a different revenue model. PoW per event is acceptable for human-scale usage (200 PDF uploads outpace PoW compute), but high-volume automated publishers would feel it. Assess once real event volume and abuse patterns are observable.
+
+### min_bounty_sats Quote Gaming (#3)
+
+Hosts self-report min_bounty_sats in PricingV1. At MVP scale (5-20 hosts, founder knows each), gaming is irrelevant. Post-MVP, compute behavioral thresholds from HostServe events: observed_threshold = min bounty at which host first registered to serve a CID. Show confidence intervals (self-reported vs observed) in UI when enough data points exist per host. Separately evaluate whether "slashable signed quote offers" are worth the expanded slash surface — current spec slashes only for cryptographic fraud, and making economic commitments slashable is a philosophical change. Defer until host count > 50 and supply curve UI is live.
+
+### Multi-Source Parallel Download (#7)
+
+Current design: client fetches all blocks from one host, failover to next on failure. Block-level addressing (GET /block/{cid}) and multiple hosts per CID (HostServe N:1) already support parallel multi-host fetch as a client optimization — no protocol change needed. Deferred decisions: (a) partial-file payment economics (client pays host A for block 1 but host B fails block 2 — no refund mechanism), (b) block availability bitmap (hosts publish which blocks they have, changing HostServe from all-or-nothing to partial — affects directory model and epoch reward eligibility), (c) stripe strategy (round-robin vs latency-weighted vs cost-optimized). Add client-side parallel fetch as SHOULD behavior once 3+ hosts serve the same CID in production. Block availability bitmap is a separate design expansion.
+
+---
+
 ## Constants (Tunable)
 
 | Constant | Value | Rationale |
@@ -1943,6 +2080,23 @@ Committed on-chain: one 32-byte value per epoch (or batched: one per day coverin
 > If founder is permanently removed at midnight: do receipts still mint (L1), hosts still discoverable (L2), portal still reachable (L3), state still computable (L4), epochs still settle (L5), code still buildable (L6), accounting still auditable (L7)? Can a new node bootstrap from a verified snapshot without the founder's coordinator (L7 + §Event Log Growth)? Every "no" is a failure.
 
 R&D tracks (FROST threshold mints, on-chain bounty accounting, erasure coding, proof-of-storage, payment rail diversity) documented separately.
+
+---
+
+## Post-MVP Assessment Queue
+
+Deferred design decisions from external review. Each has a trigger condition — assess when the trigger fires, not before. MVP mitigations noted where applicable.
+
+| # | Issue | MVP Mitigation | Trigger | Design Space |
+|---|-------|---------------|---------|--------------|
+| 2 | Discovery-event spam (Layer A.1 events are free) | Coordinator rate-limits per pubkey/IP | Real event volume + abuse patterns visible | Paid ingest (402-gated POST /event) vs PoW per event. Interacts with materializer market — paid ingest funds materializers. PoW penalizes legitimate bulk publishers. |
+| 3 | `min_bounty_sats` quote gaming | Founder knows all hosts; gaming irrelevant | Host count > 50, supply curve UI live | Behavioral inference (observed_threshold from HostServe events). Confidence intervals (self-reported vs observed). Slashable signed quotes expand slash surface beyond crypto fraud — separate decision. |
+| 5 | Receipt privacy (ephemeral pubkeys) | Receipt submission opt-in; ephemeral pubkeys recommended (§Receipt Privacy) | Aggregator receives >1000 receipts/day from distinct clients | Blinded/bearer receipts (Cashu-style). PoW escalation already trivially bypassed via key rotation — economic cost is the real defense. |
+| 7 | Multi-source parallel download | Single-host fetch with failover | 3+ hosts serve the same CID in production | Client-side block striping across hosts (no protocol change). Partial-file payment economics (paid host A but host B failed). Block availability bitmap changes HostServe from all-or-nothing to partial — design expansion. |
+| 9 | Audit griefing / sandbagging | L402 cost gates spam audits | Audit volume > 100/day | Cap audit frequency per (host, cid, epoch). PRF-based audit target selection (auditable but unpredictable). Auditor bond separates "cost to audit" from "revenue to auditee." Regional selective failure: operational fix (Tor), not protocol fix. |
+| 11 | Client safety (beyond denylist) | CID denylist + MIME gate + magic byte check (§Client Safety Layer) | First malware incident in production | Attester pack distribution model. Encrypted blob opacity to attesters. |
+| 12+A | Materializer market + paid event ingest | Founder is sole materializer; MaterializerV1 schema + MaterializerPricingV1 defined; DirectoryV1 includes `materializers[]`; coordinator rate-limits for free | Second materializer operator expresses interest | Key insight: materializers are metadata hosts — same L402, same market. Ingest = PUT /block equivalent; queries = GET /block equivalent. Interface defined (§MaterializerV1). Remaining: relay-vs-materializer separation at scale, consistency model for divergent state, economic tuning (ingest fee vs query fee balance). |
+| B | Founder service replacement specs | Longevity section L1-L7 | Pre-launch documentation pass | For each service (directory, mints, aggregator, snapshots, provisioning, materializer): inputs, outputs, swap procedure. Test: "can a stranger replace it without contacting the founder?" |
 
 ---
 

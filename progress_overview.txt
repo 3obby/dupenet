@@ -534,5 +534,89 @@ REMAINING POLISH (non-blocking, do when convenient)
     - depends on Sprint 7d.1 (snapshot format must exist first)
     - Taproot tweak or OP_RETURN, ~$0.50/day at 1 tx/day covering 6 epochs
 
+External review fixes (solved — applied to mvp_plan.md):
+[x] FileManifest merkle_root            real binary Merkle tree (leaf hash + pair hash), not SHA256(concat) (#1)
+    - enables inclusion proofs, streaming verification, partial block validation
+[x] Stake language: custodial            "deposited with coordinator — custodial in MVP" (#4)
+    - post-MVP: on-chain UTXO, federation, or DLC-based escrow
+[x] Free preview rate limiting           per-IP token bucket (60 burst / 10 sustained); CDN for founder hosts (#6)
+    - hosts can disable free tier; MUST rate-limit if enabled
+[x] Storage pricing knob                 sats_per_gb_month: u64? added to PricingV1 (#8)
+    - enables durability estimation: (bounty - egress_drain) / (storage_cost * size_gb) = months
+[x] Pin SLA semantics                    best effort + full refund if min_copies unmet 6 epochs (#10)
+    - no PIN_CANCEL_FEE on SLA-triggered cancel; regions relaxable via signed amendment
+
+
+================================================================================
+POST-MVP ASSESSMENT (deferred from external review, assess after launch)
+================================================================================
+
+DocRef: MVP_PLAN:§Post-MVP Assessment Queue
+
+[ ] Discovery-event spam pricing       decide: paid ingest (402-gated POST /event) vs rate-limited + PoW
+    - MVP: coordinator rate-limits per pubkey/IP (sufficient at founder scale)
+    - assess once real event volume + abuse patterns visible
+    - interacts with materializer market design (paid ingest funds materializers)
+    - PoW per event acceptable for humans; evaluate impact on automated publishers
+
+[ ] min_bounty_sats quote gaming       compute behavioral thresholds from HostServe event data
+    - MVP: founder knows all hosts, gaming irrelevant
+    - post-MVP: observed_threshold = min bounty at which host first served a CID
+    - show confidence intervals (self-reported vs observed) when data sufficient
+    - separately evaluate slashable signed quotes (expands slash surface beyond crypto fraud)
+    - trigger: host count > 50 and supply curve UI is live
+
+[ ] Multi-source parallel download     client fetches blocks from multiple hosts simultaneously
+    - MVP: single-host fetch with failover (sufficient for 2-3 hosts)
+    - protocol already supports it (block-level addressing + multiple hosts per CID)
+    - deferred: partial-file payment economics, block availability bitmap, stripe strategy
+    - trigger: 3+ hosts serve the same CID in production
+
+[ ] Receipt privacy (ephemeral pubkeys) clients SHOULD use one-time keypairs for receipt submission (#5)
+    - receipt submission already opt-in; casual readers (L402 only) have no protocol exposure
+    - ephemeral pubkeys don't weaken anti-sybil: hard defense is economic (L402 cost + mint token),
+      not identity-based (key generation is free; PoW escalation per-pubkey already trivially bypassed)
+    - RECEIPT_MIN_UNIQUE=3 is a tripwire, not a wall (3 throwaway keys cost zero)
+    - lean on payment-based diversity signals: distinct payment_hash, temporal spread, graph breadth
+    - aggregator remains MVP privacy trust point (same as all founder dependencies)
+    - long-term: blinded/bearer receipts (Cashu-style) for zero-knowledge demand proofs
+    - spec updated: MVP_PLAN:§Receipt Privacy (DocRef: MVP_PLAN:§Fetch Flow, §Host Self-Farming)
+
+[ ] Audit griefing hardening            cap frequency, deterministic target selection (#9)
+    - cap audit frequency per (host, cid, epoch) — prevents bandwidth griefing
+    - PRF-based audit target selection (auditable but unpredictable to host)
+    - L402 cost already gates spam audits; separate auditor bond adds complexity, defer
+    - regional selective failure (honest to auditor IPs, corrupt to others): operational fix (Tor), not protocol fix
+    - trigger: audit volume becomes meaningful (>100 audits/day)
+
+[ ] Client safety layer                 layered pre/post-fetch safety, no sandboxing (#11)
+    - mirrors operator attestation model (§Operator Content Policy) applied to client side
+    - pre-fetch: MIME-type gate (warn on executables/scripts), publisher signal display, CID denylist
+    - post-fetch: SHA256 verify (already in spec), magic bytes vs declared MIME, known-good list check
+    - ClientPolicyV1 schema: attester_follow, mime_warn, mime_block, trusted_publishers, threshold
+      same import/export format as operator policy JSON
+    - known-good lists = signed AssetListV1 from projects (code signing via CIDs)
+    - encrypted blobs opaque to attesters — packs only work for known-flagged unencrypted CIDs
+    - out of scope: OS-level sandboxing, content rating, server-side scanning, global blocklist
+    - applied to mvp_plan.md: new §Client Safety Layer section
+    - trigger: first malware incident in production
+
+[~] Materializer market + paid ingest   materializers = metadata hosts, same L402 economics (#12 + A)
+    - key insight: materializer is a host for metadata — ingest events (like PUT /block),
+      serve queries (like GET /block). Same L402, same pricing model, same directory discovery.
+    - applied to mvp_plan.md: thesis #6, MaterializerV1 + MaterializerPricingV1 schemas,
+      DirectoryV1.materializers[], propagation model (relay vs materializer separation)
+    - MVP: founder is sole materializer; free ingest (rate-limited), free queries
+    - remaining design work (post-MVP, trigger: second materializer operator):
+      - relay-vs-materializer economic separation at scale
+      - consistency model for divergent materializer state
+      - economic tuning: ingest fee vs query fee balance
+
+[ ] Founder service replacement specs   inputs/outputs/swap procedure per service (B)
+    - for each: directory, mints, aggregator, snapshots, provisioning, materializer
+    - test: can a stranger replace it without "contact the founder"?
+    - if not, the longevity section should say so honestly
+    - trigger: pre-launch documentation pass
+
 
 LEGEND: [x] done  [~] partial/stub  [ ] not started
