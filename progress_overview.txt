@@ -256,6 +256,168 @@ Exit: two independent hosts serve the same CID. Kill one, content survives. Rece
 
 
 ================================================================================
+PATH A.1: DISCOVERY + SIGNALS (no VPS dependency — build while waiting)
+================================================================================
+
+Goal: content is discoverable, quotable, and actionable by humans and foreign peers.
+All work is on schemas, CLI, coordinator API, and web surface — unblocked by VPS.
+DocRef: MVP_PLAN:§Visibility is derived not curated, §Bootstrap Sequence, §Longevity L2/L4
+
+Design context:
+  - Every protocol action (tip, serve, receipt) is a signed event referencing a CID.
+  - Events propagate via gossip (Nostr relays, peer exchange) — coordinator is one materializer, not the authority.
+  - Content grouping is an event (AssetListV1), not a protocol entity — keeps Layer A dumb.
+  - Reputation signals are automatic exhaust from protocol operation (receipts, spot-checks, tips), not ratings.
+  - Quotes come from sampling real host thresholds, not from formulas.
+  - Previews (thumbnails, excerpts) drive consumption — consumption drives receipts — receipts drive the economic loop.
+
+## Sprint 7b — Discovery Event Schemas (packages/physics)
+
+Event kinds for content announcement, grouping, and signal propagation.
+Foundation layer — everything in discovery/metadata depends on these schemas.
+
+[ ] ContentAnnounceV1 schema           signed event: cid, title, description, mime, size, language, tags, preview, source
+    - TypeBox schema in physics (same pattern as TipV1, HostServeV1)
+    - canonical serialization + event_id = SHA256(canonical(content))
+    - Ed25519 signature verification
+    - preview field: { type: "image/jpeg", data: "<base64>" } or { type: "text/plain", excerpt: "..." }
+    - max inline preview: 16 KiB (fits in Nostr event payload)
+    - optional fields: source_url (provenance), author_name, created_date (content date, not upload)
+[ ] AssetListV1 schema                 signed event: title, description, items[{cid, name, mime, size}], tags, language
+    - content-addressed: list_cid = SHA256(canonical(AssetListV1))
+    - items reference asset_root CIDs
+    - enables collection fan-out (tips distributed across constituents)
+[ ] Host profitability threshold        add min_bounty_sats to PricingV1 or host registration
+    - node-agent already has minBounty config — publish it in directory
+    - enables client-side supply curve estimation for market quoting
+[ ] Event kind constants               CONTENT_ANNOUNCE, ASSET_LIST, TIP, HOST_SERVE, RECEIPT_SUBMIT, EPOCH_SUMMARY
+    - integer kind IDs (Nostr NIP-compatible range for future relay publishing)
+    - version: u8 in every event (spec requirement: wire rules)
+[ ] Event schema tests                 construct, sign, verify for ContentAnnounceV1 + AssetListV1
+
+Exit: physics exports event schemas. ContentAnnounceV1 and AssetListV1 are constructable,
+      signable, verifiable. Client can build an announcement, sign it, another client verifies.
+
+## Sprint 7c — Batch Upload + Content Metadata (apps/cli)
+
+The whistleblower flow: upload a directory of PDFs with human-readable metadata.
+
+[ ] `dupenet upload <dir>`              batch upload: chunk + upload each file in directory
+    - recursive traversal, filters by known MIME types
+    - progress: file N/M, blocks K/T overall
+    - skip already-uploaded blocks (409 Conflict = ok, resume on failure)
+    - configurable concurrency (parallel block uploads)
+[ ] Upload metadata flags               --title, --description, --tags, --language, --source
+    - per-file item name derived from filename (strip extension, sanitize)
+    - collection-level metadata from flags
+[ ] Thumbnail generation                generate preview thumbnails client-side
+    - images: resize to 200px wide JPEG (sharp or similar)
+    - text/PDF: extract first 500 chars as text excerpt
+    - thumbnails uploaded as blobs (own CIDs, referenced in AssetRoot.thumbs)
+[ ] ContentAnnounceV1 publishing        publish per-file discovery event after upload
+    - signed with uploader's key
+    - inline preview (base64 thumbnail or text excerpt, ≤16 KiB)
+    - POST to coordinator; event stored for discovery queries
+[ ] AssetListV1 publishing              publish collection event after batch upload completes
+    - groups all uploaded assets with filenames + metadata
+    - signed, content-addressed (list_cid)
+    - print shareable collection URL: https://<gateway>/c/<list_cid>
+[ ] Collection fan-out tip              `dupenet tip <list_cid> <sats>` resolves list → tips each constituent
+    - proportional by file size (larger files get proportionally more)
+    - prints per-asset allocation + total pool credits
+
+Exit: `dupenet upload ~/leak/ --title "Court Filings" --tags epstein,legal`
+      → uploads 200 PDFs with thumbnails, prints collection URL.
+      `dupenet tip <list_cid> 10000` → 10,000 sats distributed across 200 assets.
+
+## Sprint 7d — Signal Aggregation + Market Quoting (apps/coordinator)
+
+Surface reputation/resilience signals from data already in Prisma.
+Enables host comparison, content resilience assessment, and market-based quoting.
+
+[ ] GET /host/:pubkey/scorecard         automatic host reputation profile
+    - uptime % (from spot-checks: rolling 30-day + lifetime)
+    - median response latency (from spot-check latencyMs)
+    - total receipts served (lifetime) + unique clients
+    - CIDs served count + tenure (epochs since registration)
+    - earned sats (sum from EpochSummaryRecords)
+    - slash count (0 for honest hosts), audit challenges received + results
+    - pricing + min_bounty_sats threshold
+    - regions
+[ ] GET /content/:cid/signals           content resilience signals
+    - bounty pool balance + tip count + unique tippers
+    - replica count (hosts serving) + host diversity (regions)
+    - receipt velocity (fetches/epoch, recent trend)
+    - unique clients (last 30 days, from receipts)
+    - epoch survival (consecutive epochs with active receipts)
+    - estimated sustainability (epochs remaining at current drain rate)
+    - composite resilience score (0-10, formula over above inputs)
+[ ] GET /author/:pubkey/profile         pseudonymous author reputation
+    - content count (announcements from this pubkey)
+    - total demand attracted (receipts across their content)
+    - external funding (tips from other pubkeys on their content)
+    - unique supporters (distinct tippers)
+    - self-hosts flag (pubkey matches a registered host?)
+    - first seen epoch
+[ ] GET /market/quote                   market-based durability quote
+    - input: cid (or list_cid), additional_sats
+    - samples host directory min_bounty_sats thresholds
+    - returns: current_copies, estimated_copies_after, estimated_days_sustained
+    - supply curve: [{bounty_level, hosts_willing}] for display
+[ ] Content metadata storage            coordinator persists discovery events
+    - Prisma models: ContentAnnounce, AssetList
+    - POST /content/announce — store + index ContentAnnounceV1
+    - POST /content/list — store + index AssetListV1
+    - GET /content/list/:list_cid — resolve collection
+    - GET /content/recent — recent announcements (browsable feed, paginated)
+    - GET /content/search?q=&tags= — filter by tags, title text
+
+Exit: GET /host/<pk>/scorecard returns full automatic reputation.
+      GET /content/<cid>/signals returns resilience + market quote.
+      GET /content/recent returns a browsable feed of announced content.
+
+## Sprint 7e — Web Content Surface
+
+The page that makes content visible and actionable. The recipient of a shared link
+sees content, resilience signals, and a Fortify button. This IS the product.
+
+[ ] Scaffold web app                   apps/web (or extend gateway), Next.js or static + API calls
+    - minimal: server-renders from coordinator + gateway APIs
+    - no auth required for viewing (read-only by default)
+[ ] Content landing page: /v/<cid>     single asset view
+    - header: title, description (from ContentAnnounceV1), kind, mime, size
+    - preview: thumbnail image or text excerpt (from event or free-served thumb blob)
+    - instrument cluster: bounty balance, replica count, epoch survival, demand trend
+    - host list: who serves this, availability %, pricing
+    - Fortify button: amount presets (100 / 1,000 / 10,000 sats) + custom
+[ ] Collection page: /c/<list_cid>     grouped content view
+    - collection title, description, total size, document count
+    - item list: name, mime, size, individual bounty, mini-preview
+    - aggregate resilience: total bounty, weakest-link replicas, overall sustainability
+    - Fortify button: fan-out tip across all assets
+    - expandable per-asset detail (individual signals, fetch link)
+[ ] Market quote display               "Add X sats → est. Y copies for Z days"
+    - calls GET /market/quote, displays supply curve visually
+    - preset amounts show estimated impact before payment
+    - updates after successful payment
+[ ] Lightning payment (browser)        Fortify button payment flow
+    - WebLN detection (Alby etc.): auto-pay on click
+    - Fallback: display Lightning invoice as QR code + copy-paste
+    - on settlement: POST /tip (or fan-out for collections), refresh signals
+[ ] Free preview serving               gateway serves thumbnails without L402
+    - thumb CIDs (from AssetRoot.thumbs) bypass L402 gate
+    - or: any GET /block/:cid where block_size ≤ 16 KiB served free
+    - enables preview rendering on landing page before any payment
+[ ] Host scorecard page: /h/<pubkey>   host reputation view
+    - renders GET /host/:pubkey/scorecard as readable profile
+    - uptime chart (recent epochs), latency, capacity, pricing
+    - link from content page host list
+
+Exit: share https://ocdn.is/c/<list_cid> → recipient sees collection with titles, previews,
+      resilience scores, and Fortify button. One click + Lightning payment to fund replication.
+
+
+================================================================================
 PATH B: S3 ADAPTER (platform adoption)
 ================================================================================
 

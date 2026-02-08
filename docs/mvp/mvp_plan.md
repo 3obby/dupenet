@@ -34,6 +34,16 @@ The protocol serves two audiences. Layer A is infrastructure other platforms con
 - Receipt verification SDK (standalone, zero dependencies)
 - S3-compatible adapter (migration unlock)
 
+**Layer A.1 — Discovery + Signals (bridge: makes Layer A content usable by humans)**
+- Discovery events: signed announcements that reference CIDs with human metadata (title, description, preview)
+- Asset lists: signed grouping events that collect CIDs into named collections
+- Signal aggregation: host scorecards, content resilience scores, author profiles — all derived automatically from protocol events (receipts, spot-checks, tips), not from ratings
+- Market quoting: host profitability thresholds enable client-side supply curve estimation
+- Free preview tier: thumbnails/excerpts served without L402 to drive paid consumption
+- Web content surface: landing pages that render content + instrument cluster + Fortify button
+
+Layer A.1 does not require Layer B's social features (vine allocation, harmonic distribution, paid inbox). It sits on top of Layer A's raw blobs + economics and makes them accessible to humans and discoverable by peers. Every Layer A.1 artifact is a signed event referencing CIDs — the coordinator materializes a default view, but any peer can materialize the same state from the event stream.
+
 **Layer B — First-Party App (exercises full worldview, see `post_mvp.md`)**
 - Vine model + harmonic allocation
 - Topic hashes + plural discovery
@@ -42,7 +52,7 @@ The protocol serves two audiences. Layer A is infrastructure other platforms con
 - Nostr social integration
 - Resilience score UI
 
-External adopters use Layer A as replaceable infrastructure. They store `asset_root` pointers, outsource distribution, and never touch Layer B. The first-party app uses both.
+External adopters use Layer A as replaceable infrastructure. They store `asset_root` pointers, outsource distribution, and never touch Layer A.1 or B. The first-party app uses all three.
 
 **Constraint**: other platforms adopt Layer A only if they can treat it as commodity infrastructure, get boring HTTP tooling + SDKs, and are not required to join the discovery/social layer.
 
@@ -59,17 +69,19 @@ External adopters use Layer A as replaceable infrastructure. They store `asset_r
 
 ### Core Entities
 
-| Entity | Identity | Mutable State |
-|--------|----------|---------------|
-| **CID** | SHA256(content) | None |
-| **BountyPool** | CID | `balance: u64` |
-| **Host** | pubkey | `status`, `stake`, `served_cids[]` |
-| **Receipt** | hash(content) | None (immutable) |
-| **Refusal** | hash(content) | None (immutable) |
-| **AssetRoot** | SHA256(canonical(AssetRootV1)) | None |
-| **FileManifest** | SHA256(canonical(FileManifestV1)) | None |
-| **Directory** | pubkey | `hosts[]`, `timestamp` |
-| **PinContract** | hash | `status`, `budget_sats`, `drain_rate` |
+| Entity | Identity | Mutable State | Layer |
+|--------|----------|---------------|-------|
+| **CID** | SHA256(content) | None | A |
+| **BountyPool** | CID | `balance: u64` | A |
+| **Host** | pubkey | `status`, `stake`, `served_cids[]` | A |
+| **Receipt** | hash(content) | None (immutable) | A |
+| **Refusal** | hash(content) | None (immutable) | A |
+| **AssetRoot** | SHA256(canonical(AssetRootV1)) | None | A |
+| **FileManifest** | SHA256(canonical(FileManifestV1)) | None | A |
+| **Directory** | pubkey | `hosts[]`, `timestamp` | A |
+| **PinContract** | hash | `status`, `budget_sats`, `drain_rate` | A |
+| **ContentAnnounce** | SHA256(canonical(ContentAnnounceV1)) | None (immutable) | A.1 |
+| **AssetList** | SHA256(canonical(AssetListV1)) | None (immutable) | A.1 |
 
 ### Entity Schemas
 
@@ -228,6 +240,59 @@ PinContractV1 {
 # Budget tops up bounty[asset_root]; drain_rate caps epoch payout.
 # Periodic proof = EpochSummary (already exists) filtered to pinned asset_root.
 # Platforms treat this as "pay for durability" without understanding vine/harmonic internals.
+
+ContentAnnounceV1 {
+  version: u8               # schema version
+  cid: bytes32              # asset_root CID this announcement describes
+  from: bytes32             # uploader/announcer pubkey
+  title: string             # human-readable name
+  description: string?      # 1-3 sentence summary
+  mime: string              # from AssetRootV1 (duplicated for discovery without blob fetch)
+  size: u64                 # total bytes (duplicated for same reason)
+  language: string?         # ISO 639-1 (e.g. "en", "ja")
+  tags: [string]?           # free-form tags for filtering
+  created: u64?             # content creation timestamp (distinct from announcement time)
+  source_url: string?       # provenance: where content originally lived
+  author_name: string?      # human-readable attribution (not necessarily the announcer)
+  preview: PreviewV1?       # inline preview (thumbnail or excerpt)
+  thumb_cid: bytes32?       # optional higher-res thumbnail as a fetchable blob
+  timestamp: u64            # announcement time
+  sig: signature            # announcer signs canonical(content fields)
+}
+# announce_id = SHA256(canonical(ContentAnnounceV1 minus sig))
+# Anyone can announce metadata for any CID. Multiple announcements per CID allowed.
+# Quality of metadata is a service — better metadata drives more consumption.
+
+PreviewV1 {
+  type: string              # "image/jpeg" | "text/plain"
+  data: string              # base64-encoded thumbnail or text excerpt
+}
+# Max inline preview: PREVIEW_MAX_BYTES (16 KiB)
+# Images: JPEG thumbnail, 200px wide
+# Text/PDF: first 500 characters
+
+AssetListV1 {
+  version: u8               # schema version
+  from: bytes32             # curator/uploader pubkey
+  title: string             # collection name
+  description: string?      # collection summary
+  items: [AssetListItemV1]  # ordered list of constituent assets
+  language: string?         # primary language
+  tags: [string]?           # collection-level tags
+  timestamp: u64
+  sig: signature
+}
+# list_cid = SHA256(canonical(AssetListV1 minus sig))
+# Collections are signed assertions, not protocol entities.
+# Anyone can create a list referencing any CIDs.
+# Multiple lists can reference the same CIDs with different curation.
+
+AssetListItemV1 {
+  cid: bytes32              # asset_root CID
+  name: string              # human-readable item name (e.g. filename)
+  mime: string?             # content type
+  size: u64?                # bytes
+}
 ```
 
 ### Entity Relationships
@@ -244,6 +309,9 @@ PinContractV1 {
 | User → Tip | 1:N | Payment history |
 | PinContract → CID | N:1 | Pin targets an asset_root (CID) |
 | PinContract → BountyPool | N:1 | Budget feeds bounty pool; drain_rate caps epoch payout |
+| ContentAnnounce → CID | N:1 | Multiple announcements per CID (different metadata sources) |
+| AssetList → CID | N:N | List groups CIDs; CIDs appear in multiple lists |
+| AssetList → ContentAnnounce | 1:N | List items may have corresponding announcements |
 
 ### Interface Boundaries
 
@@ -671,7 +739,10 @@ PricingV1 {
   min_request_sats: u64    # floor per request (grief resistance)
   sats_per_gb: u64         # normal bandwidth rate
   burst_sats_per_gb: u64   # surge price when busy (optional)
+  min_bounty_sats: u64?    # profitability threshold: min bounty pool to mirror a CID (optional)
 }
+# min_bounty_sats enables market-based quoting: clients sample host thresholds
+# to estimate how many copies a given bounty level will attract.
 ```
 
 ### Charge Formula
@@ -701,6 +772,20 @@ cost(bytes, busy) =
 | 1 GB | ~500 sats |
 
 The `min_request_sats` is the real anti-abuse lever. Each block fetch costs at least 3 sats.
+
+### Free Preview Tier
+
+Thumbnails and small blobs bypass L402 to drive consumption of paid content.
+
+```
+FREE_PREVIEW_MAX_BYTES = 16384   # 16 KiB — covers thumbnails, text excerpts
+```
+
+Two mechanisms (host chooses):
+1. **Thumbnail CIDs**: blocks referenced by `AssetRoot.thumbs[]` served free (host opts in)
+2. **Size threshold**: any `GET /block/{cid}` where `block_size ≤ FREE_PREVIEW_MAX_BYTES` served free
+
+Rationale: a 10 KiB JPEG thumbnail costs negligible bandwidth but 6× increases the probability of a paid fetch of the full content. Free previews are loss leaders that drive the L402 revenue loop. Hosts who don't want to serve free previews simply don't opt in — pricing is local.
 
 ### Client Behavior (SHOULD)
 
@@ -1005,6 +1090,172 @@ DirectoryV1 {
 
 ---
 
+## Discovery Event Model (Layer A.1)
+
+Every meaningful protocol action is a signed event referencing a CID. Events propagate via gossip (Nostr relays, peer exchange). The coordinator materializes a default view, but any peer can materialize the same state from the event stream. Discovery is emergent from event accumulation, not curated by any authority.
+
+### Event Kinds
+
+All events share: `version: u8`, `from: pubkey`, `timestamp: u64`, `sig: signature`. Event identity = `SHA256(canonical(event minus sig))`.
+
+| Kind | Schema | Purpose | Producer |
+|------|--------|---------|----------|
+| `CONTENT_ANNOUNCE` | ContentAnnounceV1 | Human metadata for a CID (title, description, preview, tags) | Uploader (or any metadata provider) |
+| `ASSET_LIST` | AssetListV1 | Named collection of CIDs | Curator/uploader |
+| `TIP` | TipV1 | Fund bounty pool for a CID | Supporter |
+| `HOST_SERVE` | HostServeV1 | Host announces it serves a CID | Host operator |
+| `HOST_REGISTER` | HostRegisterV1 | Host joins the network | Host operator |
+| `RECEIPT_SUBMIT` | ReceiptV2 | Proof of paid consumption | Client |
+| `EPOCH_SUMMARY` | EpochSummaryV1 | Settlement results for an epoch | Aggregator |
+| `REFUSAL` | RefusalV1 | Host declares what it won't serve | Host operator |
+
+### Propagation Model
+
+```
+MVP:     Events flow via HTTP to coordinator (POST /tip, POST /content/announce, etc.)
+         Coordinator stores + materializes views.
+         Coordinator is one materializer, not the authority.
+
+Future:  Events published to Nostr relays (NIP-compatible kind numbers).
+         Any peer subscribes, catches up on history, materializes local views.
+         Coordinator becomes optional cache.
+         (Already designed for in L2 + L4 of Longevity section.)
+```
+
+### Peer Discovery (How a New Node Bootstraps)
+
+A new node knows nothing. It needs to discover what content exists, what's funded, what's worth mirroring.
+
+```
+1. Bootstrap:   Know at least one coordinator URL or Nostr relay (hardcoded or DNS-seeded)
+2. Catch-up:    Subscribe to event stream. Query recent events by kind:
+                - TIP events → what CIDs have been funded recently
+                - HOST_SERVE events → who serves what, at what price
+                - CONTENT_ANNOUNCE events → human metadata for CIDs
+                - ASSET_LIST events → collections declared by uploaders
+                - EPOCH_SUMMARY events → what settled, where receipts flowed
+3. Materialize: Replay events to build local views (bounty pools, host directory, content index)
+4. Filter:      Selective sync by bounty level, content type, region, recency
+5. Participate:  Mirror profitable CIDs, publish own HOST_SERVE events
+```
+
+The coordinator's `GET /bounty/feed` (used by node-agent today) is a materialized view over TIP events. Any peer with the event stream can compute the same feed.
+
+### Content Grouping
+
+Collections are signed events, not protocol entities. The blob layer stays dumb.
+
+- Uploader publishes `AssetListV1` grouping CIDs with human-readable names
+- Anyone can publish their own list referencing the same CIDs (different curation, different metadata)
+- Tipping a collection = client-side fan-out: resolve list → tip each constituent asset_root proportionally
+- Bounty pools remain per-CID (hosts don't need to understand collections)
+
+Multiple announcements and lists for the same CID are expected. Metadata quality is a service — better metadata drives more consumption, more consumption drives more receipts.
+
+### Collection Fan-Out (Tipping a List)
+
+```
+tip_collection(list_cid, total_sats):
+  list = resolve(list_cid)                     # fetch AssetListV1
+  total_size = sum(item.size for item in list.items)
+  for item in list.items:
+    share = floor(total_sats * item.size / total_size)
+    tip(item.cid, share)                       # individual tip per constituent
+```
+
+Proportional by file size: larger files get proportionally more (they cost more to store/serve). Alternative strategies (equal split, manual allocation) are client-side decisions.
+
+---
+
+## Signal Layer (Automatic Reputation)
+
+Reputation signals are exhaust from normal protocol operation. No ratings, no reviews, no human judgment. Every signal is either a cryptographic proof or an economic fact derived from signed events.
+
+**Principle**: Positive signals accumulate automatically from protocol activity. Negative signals require cryptographic proof of fraud or are observable availability failures.
+
+### Host Signals (Automatic)
+
+| Signal | Source | Cost to Fake |
+|--------|--------|-------------|
+| Uptime % | Spot-check pass/fail (rolling window) | Must actually serve correct bytes |
+| Median latency | Spot-check latencyMs | Must actually respond fast |
+| Receipt volume | Lifetime receipt count | Each receipt costs L402 + PoW |
+| Unique clients | Distinct client pubkeys in receipts | Each pubkey costs sats + escalating PoW |
+| CIDs served | HostServe event count | Must store + serve real blocks |
+| Tenure | Epochs since registration | Time is unfakeable |
+| Earned sats | Sum from EpochSummaryRecords | Derived from verified receipt flow |
+| Slash count | AuditChallenge events with proven fraud | Cryptographic proof required |
+| Profitability threshold | min_bounty_sats from PricingV1 | Self-reported, but market-verified |
+
+### Content Signals (Automatic)
+
+| Signal | Source | Meaning |
+|--------|--------|---------|
+| Bounty pool balance | TIP events | Funding committed to keep this alive |
+| Tip count + unique tippers | TIP events (distinct `from` pubkeys) | Breadth of support (1 whale vs 200 supporters) |
+| Receipt velocity | Receipts per epoch, recent trend | Active demand (paid fetches happening now) |
+| Client diversity | Unique client pubkeys in receipts | Genuine demand breadth |
+| Replica count | HOST_SERVE events for this CID | Independent hosts serving |
+| Host diversity | Distinct regions/ASNs of serving hosts | Geographic resilience |
+| Epoch survival | Consecutive epochs with active receipts | Sustained demand over time |
+| Estimated sustainability | bounty / drain_rate at current host count | How long funding lasts |
+
+Composite **resilience score** = weighted formula over these inputs. Client-computable, auditable, not authoritative.
+
+### Author Signals (Pseudonymous, Automatic)
+
+| Signal | Source | Meaning |
+|--------|--------|---------|
+| Content published | CONTENT_ANNOUNCE events from pubkey | Volume |
+| Demand attracted | Receipts across all their CIDs | Did people consume what they published? |
+| External funding | TIP events from *other* pubkeys on their content | Others spending real sats on your stuff |
+| Unique supporters | Distinct tippers across their content | Breadth of support |
+| Content survival rate | Fraction of uploads still served after N epochs | Lasting value vs flash-in-pan |
+| Self-hosts | Pubkey matches a registered Host | Skin in the game |
+| First seen | Earliest event from this pubkey | Age in the system |
+
+### Market Quoting (Supply Curve)
+
+Clients estimate replication by sampling host `min_bounty_sats` thresholds from the directory:
+
+```
+quote(cid, additional_sats):
+  current_bounty = query_bounty(cid)
+  new_bounty = current_bounty + additional_sats
+  
+  hosts = query_directory()
+  willing = [h for h in hosts if h.pricing.min_bounty_sats <= new_bounty]
+  
+  return {
+    current_copies: count(hosts serving cid),
+    estimated_copies: len(willing),
+    estimated_sustainability: new_bounty / cid_epoch_cap(new_bounty),
+    supply_curve: [
+      { bounty_level: 50,    hosts_willing: count(h where threshold <= 50) },
+      { bounty_level: 200,   hosts_willing: count(h where threshold <= 200) },
+      { bounty_level: 1000,  hosts_willing: count(h where threshold <= 1000) },
+      ...
+    ]
+  }
+```
+
+This is a real market quote from counterparty signals, not a formula estimate. Accuracy improves with network size.
+
+### Anti-Fakery Economics
+
+| Attack | Defense |
+|--------|---------|
+| Inflate own receipt count | Each receipt costs real L402 sats + PoW compute = demand subsidy at cost |
+| Fake unique clients | Each pubkey needs sats + PoW escalation per receipt per day |
+| Inflate tip count | Each tip costs real Lightning sats |
+| Fake uptime | Spot-checks are protocol-initiated, not self-reported |
+| Inflate tenure | Time is unfakeable |
+| Self-tip to boost content | Costs real sats. If no one else tips, content dies when your money runs out |
+
+All positive signals are economically costly to produce. Self-promotion is taxed, not prevented. At scale, self-farming is demand subsidy at cost (same principle as receipt anti-sybil: §Host Self-Farming).
+
+---
+
 ## Upgradability
 
 ### Freeze Layers
@@ -1012,7 +1263,7 @@ DirectoryV1 {
 | Layer | Examples | Changeability |
 |-------|----------|---------------|
 | **Frozen** | SHA256 for CIDs, canonical serialization rules, CID semantics | Never. Change breaks all interop. |
-| **Versioned** | ReceiptV2, AssetRootV1, PricingV1, all wire schemas | Additive only. V1 never changes; publish V2 alongside. |
+| **Versioned** | ReceiptV2, AssetRootV1, PricingV1, ContentAnnounceV1, AssetListV1, all wire schemas | Additive only. V1 never changes; publish V2 alongside. |
 | **Tunable** | EPOCH_LENGTH, thresholds, reward caps, all constants | Change at epoch boundaries. |
 | **Local** | Client ranking, host pricing, discovery config | Each party decides. No coordination. |
 
@@ -1144,12 +1395,85 @@ Phase 1 creates the platform primitive. External adopters can use it as a CDN re
                [5] ──────►     (starts once hosts + bounty pool work)
 ```
 
+---
+
+### Phase 1.5: Discovery + Signals (Layer A.1)
+
+Makes Layer A content usable by humans and discoverable by foreign peers. No dependency on production deployment — buildable in parallel with Phase 1 infrastructure.
+
+**6. Discovery event schemas + batch upload**
+
+Deliverables:
+- ContentAnnounceV1 + AssetListV1 schemas in physics (TypeBox, canonical, signable)
+- PreviewV1 schema (inline thumbnail/excerpt, ≤16 KiB)
+- Event kind constants (Nostr NIP-compatible range)
+- Batch upload in CLI: `dupenet upload <dir>` → chunk all files, generate thumbnails, publish ContentAnnounceV1 per file + AssetListV1 for collection
+- Upload metadata flags: `--title`, `--description`, `--tags`, `--language`, `--source`
+- Collection fan-out tipping: `dupenet tip <list_cid> <sats>` → resolves list, distributes across constituents proportionally by size
+- `min_bounty_sats` field on PricingV1 (host publishes profitability threshold)
+
+Dependencies: Phase 1 steps 1-3 (needs blob layer + host registration for end-to-end)
+
+Exit: `dupenet upload ~/leak/ --title "Court Filings" --tags legal` uploads 200 PDFs with previews, prints one collection URL. `dupenet tip <list_cid> 10000` distributes sats across all constituents.
+
+---
+
+**7. Signal aggregation + market quoting**
+
+Deliverables:
+- Coordinator stores ContentAnnounceV1 + AssetListV1 events (Prisma models, POST/GET endpoints)
+- `GET /content/recent` — browsable feed of announced content (paginated, filterable by tags)
+- `GET /content/list/:list_cid` — resolve collection
+- `GET /host/:pubkey/scorecard` — automatic host reputation (uptime, latency, receipts, tenure, earnings, slashes)
+- `GET /content/:cid/signals` — content resilience (bounty, replicas, demand trend, sustainability estimate, composite resilience score)
+- `GET /author/:pubkey/profile` — pseudonymous author reputation (content count, demand attracted, unique supporters)
+- `GET /market/quote` — supply curve from host thresholds (at bounty X, Y hosts would mirror)
+
+Dependencies: Phase 1 steps 1-5 (needs bounty pools, receipts, spot-checks — data must exist in Prisma)
+
+Exit: `GET /content/recent` returns a human-browsable feed. `GET /content/<cid>/signals` returns resilience score + quote. `GET /host/<pk>/scorecard` returns full automatic reputation.
+
+---
+
+**8. Web content surface**
+
+Deliverables:
+- Content landing page: `/v/<cid>` renders content + metadata + instrument cluster + Fortify button
+- Collection page: `/c/<list_cid>` renders grouped content with per-asset signals + aggregate resilience
+- Market quote display: "Add X sats → est. Y copies for Z days" from supply curve
+- Lightning payment in browser: WebLN auto-pay + QR code fallback
+- Free preview serving: gateway serves thumbnail CIDs / small blocks without L402
+- Host scorecard page: `/h/<pubkey>` renders host reputation profile
+
+Dependencies: steps 6-7 (needs event schemas + signal endpoints)
+
+Exit: share `https://ocdn.is/c/<list_cid>` → recipient sees collection with titles, previews, resilience scores, and Fortify button. One Lightning payment funds replication across all documents.
+
+---
+
+### Parallelism (Phase 1 + 1.5)
+
+```
+Phase 1:
+[1] ──────────────────────►
+     [2] ──────────────►
+          [3] ────────────►
+     [4] ────►
+               [5] ──────►
+
+Phase 1.5 (parallel, no VPS dependency):
+[6] ────────────►              (needs physics + CLI; starts after schemas stable)
+     [7] ──────────────►       (needs coordinator + Prisma data)
+          [8] ────────────►    (needs signal endpoints + event schemas)
+```
+
 Phase 2 (Layer B: first-party app) build plan is in `post_mvp.md`.
 
 ### Adoption Path (Expected)
 
 - **Early**: Apps use Layer A as origin/CDN for public media (store `asset_root` pointers, outsource distribution)
 - **Mid**: Apps use paid fetch + pin contracts for mirrored archives and paid downloads
+- **Mid-late**: Humans discover content via web surface, fund replication via Fortify; hosts compete for bounties
 - **Late**: Apps run 1-2 nodes, participate in bounty loop, use receipt SDK for cross-platform demand signals
 
 ---
@@ -1417,13 +1741,21 @@ Layer B success criteria (attention pricing, discovery, graph accumulation, line
 | PIN_MIN_BUDGET | 210 sats | Minimum pin contract budget (covers at least a few epochs) |
 | PIN_MAX_COPIES | 20 | Cap on min_copies per pin contract |
 | PIN_CANCEL_FEE | 5% | Deducted from remaining budget on early cancellation |
+| FREE_PREVIEW_MAX_BYTES | 16,384 | 16 KiB — max block size served without L402 (thumbnails, excerpts) |
+| PREVIEW_MAX_BYTES | 16,384 | Max inline preview in ContentAnnounceV1 events |
+| PREVIEW_THUMB_WIDTH | 200 px | Default thumbnail width for image/PDF previews |
+| PREVIEW_TEXT_CHARS | 500 | Max characters for text excerpt previews |
+| MAX_ASSET_LIST_ITEMS | 1,000 | Cap items per AssetListV1 (prevents unbounded events) |
+| MIN_BOUNTY_SATS_DEFAULT | 50 | Default host profitability threshold for min_bounty_sats |
 
 **Derived (not tunable)**:
 - PoW difficulty: `TARGET_BASE >> floor(log2(receipt_count + 1))`
 - Block selection: `PRF(epoch_seed || file_root || client) mod num_blocks`
 - Pin drain_rate: `budget_sats / duration_epochs`
+- Collection fan-out share: `floor(total_sats * item.size / total_collection_size)` per constituent
+- Resilience score: weighted composite of replica count, host diversity, demand trend, sustainability estimate
 
-Layer B constants (vine allocation, discovery, inbox) are in `post_mvp.md`.
+Layer A.1 constants are tunable at the same granularity as Layer A (epoch boundaries or local). Layer B constants (vine allocation, discovery, inbox) are in `post_mvp.md`.
 
 Start with these. Tune based on observed behavior.
 
