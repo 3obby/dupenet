@@ -256,211 +256,144 @@ Exit: two independent hosts serve the same CID. Kill one, content survives. Rece
 
 
 ================================================================================
-PATH A.1: DISCOVERY + SIGNALS (no VPS dependency — build while waiting)
+PATH A.1: EventV1 + REFERENCE MATERIALIZER (no VPS dependency — build while waiting)
 ================================================================================
 
-Goal: content is discoverable, quotable, and actionable by humans and foreign peers.
-All work is on schemas, CLI, coordinator API, and web surface — unblocked by VPS.
-DocRef: MVP_PLAN:§Visibility is derived not curated, §Bootstrap Sequence, §Longevity L2/L4
+Goal: collapse all non-blob, non-receipt protocol actions into EventV1 envelope.
+Build reference materializer that interprets kind bytes. Content becomes discoverable,
+fundable, and discussable via one endpoint (POST /event) and one query (GET /events).
+DocRef: MVP_PLAN:§Protocol vs Materializer Boundary, §Event Layer, §Event Kind Payload Conventions
 
-Design context:
-  - Every protocol action (tip, serve, receipt) is a signed event referencing a CID.
-  - Events propagate via gossip (Nostr relays, peer exchange) — coordinator is one materializer, not the authority.
-  - Content grouping is an event (AssetListV1), not a protocol entity — keeps Layer A dumb.
-  - Reputation signals are automatic exhaust from protocol operation (receipts, spot-checks, tips), not ratings.
-  - Quotes come from sampling real host thresholds, not from formulas.
-  - Previews (thumbnails, excerpts) drive consumption — consumption drives receipts — receipts drive the economic loop.
+Architectural decision (2025-02-08):
+  - Protocol surface area is the enemy. Proof-of-service is sacred. Everything else is views.
+  - EventV1 { v, kind, from, ref, body, sats, ts, sig } is the only non-blob protocol primitive.
+  - Protocol rule: if event.sats > 0, credit pool[event.ref] += sats. That's it.
+  - Kind interpretation, threading, ranking, author rewards, pin lifecycle, moderation = materializer.
+  - Tip / upvote / fortify / pin are all the same action: POST /event with sats > 0.
+  - Pins are kind=PIN_POLICY events with drain policy in body. Materializer enforces SLA.
+  - Author earnings: not in protocol. Authors self-host (earn as hosts) or earn via materializer bonuses.
+  - Existing POST /tip, POST /host/register, POST /content/announce → collapse into POST /event.
+  - ReceiptV2 + epoch settlement untouched. Don't fix what's not broken.
 
-## Sprint 7b — Discovery Event Schemas (packages/physics)
+## Sprint 7b — EventV1 Envelope (packages/physics)
 
-Event kinds for content announcement, grouping, and signal propagation.
-Foundation layer — everything in discovery/metadata depends on these schemas.
+The protocol-level event primitive. Everything in materializer depends on this.
 
-[ ] ContentAnnounceV1 schema           signed event: cid, title, description, mime, size, language, tags, preview, source
-    - TypeBox schema in physics (same pattern as TipV1, HostServeV1)
-    - canonical serialization + event_id = SHA256(canonical(content))
-    - Ed25519 signature verification
-    - preview field: { type: "image/jpeg", data: "<base64>" } or { type: "text/plain", excerpt: "..." }
-    - max inline preview: 16 KiB (fits in Nostr event payload)
-    - optional fields: source_url (provenance), author_name, created_date (content date, not upload)
-[ ] AssetListV1 schema                 signed event: title, description, items[{cid, name, mime, size}], tags, language
-    - content-addressed: list_cid = SHA256(canonical(AssetListV1))
-    - items reference asset_root CIDs
-    - enables collection fan-out (tips distributed across constituents)
-[ ] Host profitability threshold        add min_bounty_sats to PricingV1 or host registration
-    - node-agent already has minBounty config — publish it in directory
-    - enables client-side supply curve estimation for market quoting
-[ ] Event kind constants               CONTENT_ANNOUNCE, ASSET_LIST, TIP, HOST_SERVE, RECEIPT_SUBMIT, EPOCH_SUMMARY
-    - integer kind IDs (Nostr NIP-compatible range for future relay publishing)
-    - version: u8 in every event (spec requirement: wire rules)
-[ ] Event schema tests                 construct, sign, verify for ContentAnnounceV1 + AssetListV1
+[ ] EventV1 TypeBox schema             { v: u8, kind: u8, from: bytes32, ref: bytes32, body: bytes, sats: u64, ts: u64, sig }
+    - canonical serialization (same pattern as existing schemas)
+    - event_id = SHA256(canonical(EventV1 minus sig))
+    - Ed25519 signature: sign/verify canonical(EventV1 minus sig)
+    - body: inline ≤16 KiB (kind-specific payload)
+    - sats: economic weight (0 = free statement, >0 = pool credit)
+[ ] Kind byte constants                0x01 FUND, 0x02 ANNOUNCE, 0x03 POST, 0x04 HOST, 0x05 REFUSAL,
+                                       0x06 ATTEST, 0x07 LIST, 0x08 PIN_POLICY, 0x09 MATERIALIZER
+[ ] Kind payload schemas (TypeBox)     AnnouncePayload, HostPayload, ListPayload, PinPayload
+    - these are materializer conventions, not protocol — live under physics for convenience
+    - unknown kinds: preserve, don't reject (extensibility)
+[ ] Pool credit rule                   if event.sats > 0: credit pool[event.ref] += sats (minus protocol fee)
+    - pool_key = event.ref (bytes32 — can be CID, event_id, topic hash)
+    - protocol is key-blind; materializer resolves ref → CID for settlement
+[ ] EventV1 tests                      construct, sign, verify; pool credit; reject forged/missing sig
+[ ] Migrate existing events            TipV1 → kind=FUND, HostServeV1 → kind=HOST, HostRegisterV1 → kind=HOST
+    - backward compat: existing POST /tip, POST /host/register still work (shim to POST /event)
+    - new canonical path: POST /event (accepts any kind)
 
-Exit: physics exports event schemas. ContentAnnounceV1 and AssetListV1 are constructable,
-      signable, verifiable. Client can build an announcement, sign it, another client verifies.
+Exit: physics exports EventV1. Construct event, sign, verify. Pool rule tested.
+      Kind payloads constructable/verifiable. One envelope replaces per-action schemas.
 
 ## Sprint 7c — Batch Upload + Content Metadata (apps/cli)
 
 The whistleblower flow: upload a directory of PDFs with human-readable metadata.
+All publishing now goes through POST /event with appropriate kind bytes.
 
 [ ] `dupenet upload <dir>`              batch upload: chunk + upload each file in directory
     - recursive traversal, filters by known MIME types
     - progress: file N/M, blocks K/T overall
     - skip already-uploaded blocks (409 Conflict = ok, resume on failure)
-    - configurable concurrency (parallel block uploads)
+    - after upload: POST kind=ANNOUNCE event per file, POST kind=LIST event for collection
 [ ] Upload metadata flags               --title, --description, --tags, --language, --source
-    - per-file item name derived from filename (strip extension, sanitize)
-    - collection-level metadata from flags
-[ ] Thumbnail generation                generate preview thumbnails client-side
-    - images: resize to 200px wide JPEG (sharp or similar)
-    - text/PDF: extract first 500 chars as text excerpt
-    - thumbnails uploaded as blobs (own CIDs, referenced in AssetRoot.thumbs)
-[ ] ContentAnnounceV1 publishing        publish per-file discovery event after upload
-    - signed with uploader's key
-    - inline preview (base64 thumbnail or text excerpt, ≤16 KiB)
-    - POST to coordinator; event stored for discovery queries
-[ ] AssetListV1 publishing              publish collection event after batch upload completes
-    - groups all uploaded assets with filenames + metadata
-    - signed, content-addressed (list_cid)
-    - print shareable collection URL: https://<gateway>/c/<list_cid>
-[ ] Collection fan-out tip              `dupenet tip <list_cid> <sats>` resolves list → tips each constituent
-    - proportional by file size (larger files get proportionally more)
-    - prints per-asset allocation + total pool credits
+[ ] Thumbnail generation                generate preview thumbnails client-side (images: 200px JPEG; text: 500 char excerpt)
+[ ] `dupenet fund <ref> <sats>`         unified funding command (replaces `dupenet tip`)
+    - POST /event with kind=FUND, sats=amount, ref=pool_key
+    - works for any ref: CID, event_id, topic hash
+    - materializer resolves LIST refs → fan-out across constituents
+[ ] `dupenet post <ref> <text>`         publish threaded text (kind=POST)
+    - ref = parent event_id (reply) or topic hash (root post)
+    - body = inline text ≤16 KiB
+    - optional --sats flag to boost own post
 
 Exit: `dupenet upload ~/leak/ --title "Court Filings" --tags epstein,legal`
-      → uploads 200 PDFs with thumbnails, prints collection URL.
-      `dupenet tip <list_cid> 10000` → 10,000 sats distributed across 200 assets.
+      → uploads 200 PDFs, publishes ANNOUNCE + LIST events, prints collection URL.
+      `dupenet fund <list_event_id> 10000` → credits pool. One endpoint.
+      `dupenet post <event_id> "This proves X"` → threaded reply published.
 
-## Sprint 7d — Signal Aggregation + Market Quoting (apps/coordinator)
+## Sprint 7d — Signal Aggregation + Market Quoting (apps/coordinator — reference materializer)
 
-Surface reputation/resilience signals from data already in Prisma.
-Enables host comparison, content resilience assessment, and market-based quoting.
+Materializer views over EventV1 stream. These are product features, not protocol.
+All endpoints are materializer conventions — other materializers may offer different views.
 
-[ ] GET /host/:pubkey/scorecard         automatic host reputation profile
-    - uptime % (from spot-checks: rolling 30-day + lifetime)
-    - median response latency (from spot-check latencyMs)
-    - total receipts served (lifetime) + unique clients
-    - CIDs served count + tenure (epochs since registration)
-    - earned sats (sum from EpochSummaryRecords)
-    - slash count (0 for honest hosts), audit challenges received + results
-    - pricing + min_bounty_sats threshold
-    - regions
-[ ] GET /content/:cid/signals           content resilience signals
-    - bounty pool balance + tip count + unique tippers
-    - replica count (hosts serving) + host diversity (regions)
-    - receipt velocity (fetches/epoch, recent trend)
-    - unique clients (last 30 days, from receipts)
-    - epoch survival (consecutive epochs with active receipts)
-    - estimated sustainability (epochs remaining at current drain rate)
-    - composite resilience score (0-10, formula over above inputs)
-[ ] GET /author/:pubkey/profile         pseudonymous author reputation
-    - content count (announcements from this pubkey)
-    - total demand attracted (receipts across their content)
-    - external funding (tips from other pubkeys on their content)
-    - unique supporters (distinct tippers)
-    - self-hosts flag (pubkey matches a registered host?)
-    - first seen epoch
-[ ] GET /market/quote                   market-based durability quote
-    - input: cid (or list_cid), additional_sats
-    - samples host directory min_bounty_sats thresholds
-    - returns: current_copies, estimated_copies_after, estimated_days_sustained
-    - supply curve: [{bounty_level, hosts_willing}] for display
-[ ] Content metadata storage            coordinator persists discovery events
-    - Prisma models: ContentAnnounce, AssetList
-    - POST /content/announce — store + index ContentAnnounceV1
-    - POST /content/list — store + index AssetListV1
-    - GET /content/list/:list_cid — resolve collection
-    - GET /content/recent — recent announcements (browsable feed, paginated)
-    - GET /content/search?q=&tags= — filter by tags, title text
+[ ] POST /event                         unified event ingest endpoint
+    - validate EventV1 sig
+    - if sats > 0: credit pool[ref]
+    - index by kind, ref, from, ts
+    - rate-limit per pubkey/IP (MVP spam defense; paid ingest later)
+[ ] GET /events?ref=&kind=&from=&since= generic event query (replaces per-kind GET endpoints)
+[ ] Prisma model: Event                 { id, kind, from, ref, body, sats, ts, sig, event_id }
+    - indexes: (ref), (kind, ts), (from, ts), (event_id unique)
+[ ] GET /feed/recent                    recent ANNOUNCE events (paginated, filterable by tags)
+[ ] GET /feed/funded                    pool_keys ranked by balance (replaces GET /bounty/feed)
+[ ] GET /host/:pubkey/scorecard         host reputation (from HOST events + spot-checks + receipts)
+[ ] GET /content/:ref/signals           content resilience (from FUND events + receipts + HOST events)
+[ ] GET /author/:pubkey/profile         pseudonymous reputation (events by pubkey + demand on their content)
+[ ] GET /market/quote                   supply curve from host min_bounty_sats thresholds
+[ ] GET /thread/:event_id               thread view: resolve ref chain from kind=POST events, return tree
 
-Exit: GET /host/<pk>/scorecard returns full automatic reputation.
-      GET /content/<cid>/signals returns resilience + market quote.
-      GET /content/recent returns a browsable feed of announced content.
+Exit: POST /event accepts all kinds. GET /events returns filtered stream.
+      GET /feed/funded ranks by pool balance. GET /thread/<id> returns discussion tree.
+      Signal endpoints are materializer views — not protocol.
 
 ## Sprint 7d.1 — Event Log Compaction + Snapshot Bootstrap (packages/physics + apps/coordinator)
 
-Event stream grows without bound. At scale, new nodes can't replay from genesis.
-Snapshots with inclusion proofs enable fast bootstrap; receipt rollups reduce gossip volume.
-Design the format now (MVP may not exercise full anchoring), so the transition
-from "trust the coordinator" to "verify against Bitcoin" is config, not architecture.
+Unchanged in scope. Snapshots now cover pools (keyed by ref) instead of bounty pools (keyed by CID).
 DocRef: MVP_PLAN:§Event Log Growth + Compaction, §Longevity L7
 
-[ ] StateSnapshotV1 schema             physics: epoch, merkle roots for each state domain, event_count, prev_hash
-    - bounty_pools: MerkleRoot (all cid → balance pairs)
-    - host_registry: MerkleRoot (all host_pubkey → status, stake, score, pricing)
-    - content_index: MerkleRoot (all cid → announce_id, list_ids)
-    - host_serves: MerkleRoot (all host → cid pairs)
-    - pin_contracts: MerkleRoot (all active pins)
-    - snapshot_hash = SHA256(canonical(StateSnapshotV1 minus snapshot_hash))
-[ ] Merkle tree library                physics: build tree from sorted key-value pairs, generate inclusion proofs, verify proofs
-    - deterministic: same inputs always produce same root
-    - O(log N) inclusion proof per entry
-    - compatible with existing binary merkle (packages/physics/src/merkle.ts)
-[ ] Snapshot generator                 coordinator: materialize current Prisma state into StateSnapshotV1
-    - triggered at epoch boundaries (every SNAPSHOT_INTERVAL_EPOCHS = 100 epochs)
-    - builds merkle trees from BountyPool, Host, HostServe, PinContract tables
-    - stores snapshot in Postgres (or as content-addressed blob)
-[ ] GET /snapshot/latest               returns most recent snapshot + epoch number
-[ ] GET /snapshot/:epoch               returns snapshot at specific epoch boundary
-[ ] GET /snapshot/:epoch/proof/:key    returns merkle inclusion proof for a specific entry
-    - e.g. proof that CID X has bounty Y in the snapshot at epoch N
+[ ] StateSnapshotV1 schema             physics: epoch, merkle roots for pools / hosts / events / serves, event_count, prev_hash
+[ ] Merkle tree library                physics: build from sorted key-value pairs, generate/verify inclusion proofs
+[ ] Snapshot generator                 coordinator: materialize Prisma state into StateSnapshotV1
+[ ] GET /snapshot/latest, GET /snapshot/:epoch, GET /snapshot/:epoch/proof/:key
 [ ] Receipt rollup in epoch settlement EpochSummary stores receipt merkle_root + counts only
-    - raw individual receipts archived (queryable) but not propagated in gossip
-    - reduces event stream volume at scale (receipts are highest-volume event type)
-[ ] GET /bootstrap                     fast node sync: returns latest snapshot + events since snapshot
-    - new node calls this instead of replaying full history
-    - response: { snapshot: StateSnapshotV1, events_since: Event[], current_epoch: u32 }
-[ ] Snapshot verification              verify snapshot_hash against published epoch_root
-    - MVP: trust coordinator signature on snapshot (same trust model as current coordinator)
-    - Future: verify against Bitcoin-anchored epoch_root (when L7 active)
-    - Verification is O(1): check hash, optionally check BTC anchor
-[ ] Snapshot + inclusion proof tests   physics: build snapshot, generate proof, verify proof, tamper detection
-    - verify correct root from known data
-    - verify inclusion proof for specific key
-    - reject proof against wrong root / tampered data
+[ ] GET /bootstrap                     fast node sync: latest snapshot + events since
+[ ] Snapshot verification              publisher sig (MVP), Bitcoin-anchored epoch root (L7)
+[ ] Snapshot + inclusion proof tests
 
-Exit: coordinator generates snapshots every 100 epochs. GET /bootstrap returns snapshot + recent events.
-      New node materializes state from snapshot (seconds, not hours). Inclusion proof verifies
-      "CID X has bounty Y" against snapshot merkle root in O(log N).
+Exit: GET /bootstrap returns snapshot + recent events. New node materializes in seconds.
 
-## Sprint 7e — Web Content Surface
+## Sprint 7e — Web Content Surface + Threading
 
-The page that makes content visible and actionable. The recipient of a shared link
-sees content, resilience signals, and a Fortify button. This IS the product.
+The page that makes content visible, fundable, and debatable. Recipients see content,
+resilience signals, a Fund button, and threaded discussion. This IS the product.
 
-[ ] Scaffold web app                   apps/web (or extend gateway), Next.js or static + API calls
-    - minimal: server-renders from coordinator + gateway APIs
-    - no auth required for viewing (read-only by default)
-[ ] Content landing page: /v/<cid>     single asset view
-    - header: title, description (from ContentAnnounceV1), kind, mime, size
-    - preview: thumbnail image or text excerpt (from event or free-served thumb blob)
-    - instrument cluster: bounty balance, replica count, epoch survival, demand trend
-    - host list: who serves this, availability %, pricing
-    - Fortify button: amount presets (100 / 1,000 / 10,000 sats) + custom
-[ ] Collection page: /c/<list_cid>     grouped content view
-    - collection title, description, total size, document count
-    - item list: name, mime, size, individual bounty, mini-preview
-    - aggregate resilience: total bounty, weakest-link replicas, overall sustainability
-    - Fortify button: fan-out tip across all assets
-    - expandable per-asset detail (individual signals, fetch link)
-[ ] Market quote display               "Add X sats → est. Y copies for Z days"
-    - calls GET /market/quote, displays supply curve visually
-    - preset amounts show estimated impact before payment
-    - updates after successful payment
-[ ] Lightning payment (browser)        Fortify button payment flow
-    - WebLN detection (Alby etc.): auto-pay on click
-    - Fallback: display Lightning invoice as QR code + copy-paste
-    - on settlement: POST /tip (or fan-out for collections), refresh signals
-[ ] Free preview serving               gateway serves thumbnails without L402
-    - thumb CIDs (from AssetRoot.thumbs) bypass L402 gate
-    - or: any GET /block/:cid where block_size ≤ 16 KiB served free
-    - enables preview rendering on landing page before any payment
-[ ] Host scorecard page: /h/<pubkey>   host reputation view
-    - renders GET /host/:pubkey/scorecard as readable profile
-    - uptime chart (recent epochs), latency, capacity, pricing
-    - link from content page host list
+[ ] Scaffold web app                   apps/web, Next.js, server-renders from materializer APIs
+[ ] Content landing page: /v/<ref>     single asset view
+    - header: title, description (from kind=ANNOUNCE events), kind, mime, size
+    - preview: thumbnail or text excerpt
+    - instrument cluster: pool balance, replica count, epoch survival, demand trend
+    - Fund button: amount slider → POST /event kind=FUND (one action, all amounts)
+[ ] Collection page: /c/<event_id>     grouped content view (from kind=LIST events)
+    - item list with per-asset signals + aggregate resilience
+    - Fund button: fan-out across constituents (materializer resolves)
+[ ] Thread page: /t/<event_id>         threaded discussion view
+    - renders kind=POST event ref chains as tree
+    - per-post: sats committed, unique funders, author age
+    - reply box: POST kind=POST with ref=parent_event_id (PoW for free; optional sats to boost)
+[ ] Market quote display               "Add X sats → est. Y copies for Z days" from supply curve
+[ ] Lightning payment (browser)        Fund button → WebLN auto-pay + QR fallback → POST /event
+[ ] Free preview serving               gateway serves thumb CIDs / small blocks without L402
+[ ] Host scorecard page: /h/<pubkey>   host reputation view from scorecard endpoint
 
-Exit: share https://ocdn.is/c/<list_cid> → recipient sees collection with titles, previews,
-      resilience scores, and Fortify button. One click + Lightning payment to fund replication.
+Exit: share https://ocdn.is/v/<ref> → content + signals + Fund button.
+      /t/<event_id> → monetized threaded discussion. Flame wars cost sats, not words.
+      One Lightning payment via one endpoint. One action: fund.
 
 
 ================================================================================
@@ -553,10 +486,11 @@ POST-MVP ASSESSMENT (deferred from external review, assess after launch)
 
 DocRef: MVP_PLAN:§Post-MVP Assessment Queue
 
-[ ] Discovery-event spam pricing       decide: paid ingest (402-gated POST /event) vs rate-limited + PoW
-    - MVP: coordinator rate-limits per pubkey/IP (sufficient at founder scale)
+[ ] Event spam pricing                 decide: paid ingest (402-gated POST /event) vs rate-limited + PoW
+    - MVP: materializer rate-limits per pubkey/IP (sufficient at founder scale)
+    - POST kind=POST (threaded comments) especially needs friction: PoW min, optional sats
     - assess once real event volume + abuse patterns visible
-    - interacts with materializer market design (paid ingest funds materializers)
+    - paid ingest funds materializers (product toll, not protocol toll)
     - PoW per event acceptable for humans; evaluate impact on automated publishers
 
 [ ] min_bounty_sats quote gaming       compute behavioral thresholds from HostServe event data
@@ -595,18 +529,19 @@ DocRef: MVP_PLAN:§Post-MVP Assessment Queue
     - post-fetch: SHA256 verify (already in spec), magic bytes vs declared MIME, known-good list check
     - ClientPolicyV1 schema: attester_follow, mime_warn, mime_block, trusted_publishers, threshold
       same import/export format as operator policy JSON
-    - known-good lists = signed AssetListV1 from projects (code signing via CIDs)
+    - known-good lists = signed kind=LIST events from projects (code signing via CIDs)
     - encrypted blobs opaque to attesters — packs only work for known-flagged unencrypted CIDs
     - out of scope: OS-level sandboxing, content rating, server-side scanning, global blocklist
     - applied to mvp_plan.md: new §Client Safety Layer section
     - trigger: first malware incident in production
 
 [~] Materializer market + paid ingest   materializers = metadata hosts, same L402 economics (#12 + A)
-    - key insight: materializer is a host for metadata — ingest events (like PUT /block),
-      serve queries (like GET /block). Same L402, same pricing model, same directory discovery.
-    - applied to mvp_plan.md: thesis #6, MaterializerV1 + MaterializerPricingV1 schemas,
-      DirectoryV1.materializers[], propagation model (relay vs materializer separation)
+    - key insight: materializer is a host for metadata — ingest events (POST /event),
+      serve queries (GET /events, GET /feed, GET /thread). Same L402, same market.
+    - EventV1 envelope + kind bytes formalized (2025-02-08 architectural decision)
+    - kind=MATERIALIZER event for discovery; MaterializerPayload in kind conventions
     - MVP: founder is sole materializer; free ingest (rate-limited), free queries
+    - author rewards = materializer product feature (rebate/bonus from materializer fees), NOT protocol
     - remaining design work (post-MVP, trigger: second materializer operator):
       - relay-vs-materializer economic separation at scale
       - consistency model for divergent materializer state
