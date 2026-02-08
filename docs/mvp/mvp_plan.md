@@ -1141,6 +1141,103 @@ A new node knows nothing. It needs to discover what content exists, what's funde
 
 The coordinator's `GET /bounty/feed` (used by node-agent today) is a materialized view over TIP events. Any peer with the event stream can compute the same feed.
 
+### Event Log Growth + Compaction
+
+**Problem**: The event stream grows without bound. At scale, TIP/RECEIPT/HOST_SERVE events explode. "Replay from genesis" becomes impractical — a new node joining at epoch 50,000 can't process millions of events before it can participate. Bootstrapping degrades to "trust a snapshot from someone," which undermines the self-verifying property (L4).
+
+**Design constraint**: Compaction must preserve auditability. A node that starts from a snapshot must be able to verify it was derived honestly from the event stream, without replaying the stream itself.
+
+**Solution: Epoch snapshots with inclusion proofs, anchored to Bitcoin.**
+
+```
+                    Event Stream (append-only, unbounded)
+                    ┌──────────────────────────────────────────┐
+                    │ TIP  TIP  RECEIPT  HOST_SERVE  TIP  ...  │
+                    └──────────────────┬───────────────────────┘
+                                       │
+                              ┌────────▼────────┐
+                              │  Epoch Summary   │  (already exists: merkle root of receipts,
+                              │  (per epoch)     │   host scores, bounty deltas)
+                              └────────┬────────┘
+                                       │
+                              ┌────────▼────────┐
+                              │  State Snapshot  │  compact materialized state at epoch N:
+                              │  (periodic)      │  bounty pools, host registry, content index
+                              └────────┬────────┘
+                                       │
+                              ┌────────▼────────┐
+                              │  Epoch Root      │  SHA256(epoch_summary || snapshot_hash)
+                              │  Anchored to BTC │  committed on-chain (L7)
+                              └─────────────────┘
+```
+
+#### State Snapshots
+
+A snapshot is a compact materialized view of protocol state at an epoch boundary:
+
+```
+StateSnapshotV1 {
+  epoch: u32                      # snapshot taken at this epoch boundary
+  bounty_pools: MerkleRoot        # merkle tree of all (cid, balance) pairs
+  host_registry: MerkleRoot       # merkle tree of all (host_pubkey, status, stake, score, pricing)
+  content_index: MerkleRoot       # merkle tree of all (cid, announce_id, list_ids)
+  host_serves: MerkleRoot         # merkle tree of all (host, cid) pairs
+  pin_contracts: MerkleRoot       # merkle tree of all active pins
+  event_count: u64                # total events through this epoch
+  prev_snapshot_hash: bytes32     # chain snapshots for consistency
+  snapshot_hash: bytes32          # SHA256(canonical(this minus snapshot_hash))
+}
+```
+
+Each merkle tree supports **inclusion proofs**: a node can verify "CID X has bounty Y in this snapshot" with O(log N) hashes, without downloading the full tree.
+
+#### Bootstrap from Snapshot
+
+```
+1. Bootstrap:    Obtain recent StateSnapshotV1 (from coordinator, peer, or relay)
+2. Verify:       Check snapshot_hash against Bitcoin-anchored epoch root (L7)
+                 If anchor exists: trustless. If not: trust-on-first-use with snapshot publisher sig.
+3. Catch-up:     Replay events ONLY from snapshot epoch to current (days, not years)
+4. Materialize:  Apply delta events to snapshot state → current state
+5. Participate:  Node is fully operational
+```
+
+A node joining at epoch 50,000 downloads a snapshot at epoch 49,900, verifies it against the anchored root, replays ~100 epochs of events, and is current. Not "trust a snapshot from someone" — verify against a Bitcoin commitment.
+
+#### Log Compaction Strategies
+
+| Strategy | When | Benefit |
+|----------|------|---------|
+| **Epoch summaries** | Every epoch (4h) | Compact receipts into merkle root + counts; raw receipts become retrievable blobs |
+| **State snapshots** | Every N epochs (configurable, e.g. every 100 epochs ≈ 17 days) | Full state checkpoint for fast bootstrap |
+| **Receipt rollups** | Per epoch | Replace individual ReceiptV2 events with `EpochSummary { merkle_root, count, unique_clients }` in the propagated stream; raw receipts stored by coordinator but not gossiped |
+| **Event pruning** | After snapshot | Events before the latest anchored snapshot can be archived to blob storage (content-addressed, retrievable) rather than kept in the hot event stream |
+| **Sharded event streams** | At scale | Partition events by `(epoch, cid_prefix)` — a node interested in CIDs starting with `0x3f` subscribes to that shard only |
+
+#### What Propagates vs. What's Archived
+
+| Data | Propagated (gossip/relay) | Archived (blob storage, retrievable) |
+|------|--------------------------|-------------------------------------|
+| State snapshots | Yes (small, periodic) | Yes |
+| Epoch summaries | Yes (compact) | Yes |
+| TIP events | Yes (needed for bounty computation) | Yes |
+| HOST_SERVE events | Yes (needed for directory) | Yes |
+| CONTENT_ANNOUNCE events | Yes (needed for discovery) | Yes |
+| Raw individual receipts | **No** — only merkle roots + counts propagate | Yes (auditors retrieve on demand) |
+| Spot-check results | Only aggregated score changes | Yes |
+
+Receipt rollups are the biggest win: individual receipts are the highest-volume event type, but only their aggregates (merkle root, count, unique clients) matter for epoch settlement and reputation signals. Raw receipts are kept for audit challenges but don't need to flow through the gossip layer.
+
+#### MVP vs. Scale
+
+| Phase | Approach |
+|-------|----------|
+| **MVP** | Single coordinator stores all events in Postgres. No compaction needed — volume is small. Epoch summaries already exist. |
+| **Early scale** | Coordinator publishes periodic state snapshots. New nodes bootstrap from snapshot + recent events. Receipt rollups reduce gossip volume. |
+| **Full scale** | Epoch root anchoring (L7) makes snapshots trustless. Sharded event streams. Raw receipts in blob storage. Any peer can generate + publish snapshots. |
+
+The important thing: **design the snapshot format and inclusion proof structure now** (even if MVP doesn't exercise it), so that the transition from "trust the coordinator" to "verify against Bitcoin" is a configuration change, not an architecture change.
+
 ### Content Grouping
 
 Collections are signed events, not protocol entities. The blob layer stays dumb.
@@ -1435,6 +1532,25 @@ Exit: `GET /content/recent` returns a human-browsable feed. `GET /content/<cid>/
 
 ---
 
+**7b. Event log compaction + snapshot bootstrap**
+
+Deliverables:
+- `StateSnapshotV1` schema in physics (epoch, merkle roots for bounty pools / host registry / content index / host serves / pins, event count, prev hash)
+- Merkle tree library for snapshot trees (build tree from key-value pairs, generate inclusion proofs, verify proofs)
+- Coordinator snapshot generator: materialize current state into `StateSnapshotV1` at epoch boundaries (every `SNAPSHOT_INTERVAL_EPOCHS`)
+- `GET /snapshot/latest` — returns most recent snapshot + epoch
+- `GET /snapshot/:epoch` — returns snapshot at specific epoch
+- `GET /snapshot/:epoch/proof/:key` — returns inclusion proof for a specific entry (e.g. bounty pool for CID X)
+- Receipt rollup in epoch settlement: `EpochSummary` stores receipt merkle root + counts; raw receipts archived, not propagated
+- Bootstrap endpoint: `GET /bootstrap` — returns latest snapshot + events since snapshot (for fast node sync)
+- Snapshot verification: verify `snapshot_hash` against Bitcoin-anchored `epoch_root` (when L7 is active); fall back to publisher signature (MVP)
+
+Dependencies: Phase 1 steps 1-5 (needs coordinator with Prisma state), step 7 (signals depend on snapshot-able state)
+
+Exit: coordinator generates snapshots every 100 epochs. New node calls `GET /bootstrap`, receives snapshot + recent events, materializes state without full replay. Inclusion proof verifies "CID X has bounty Y" against snapshot merkle root.
+
+---
+
 **8. Web content surface**
 
 Deliverables:
@@ -1464,6 +1580,7 @@ Phase 1:
 Phase 1.5 (parallel, no VPS dependency):
 [6] ────────────►              (needs physics + CLI; starts after schemas stable)
      [7] ──────────────►       (needs coordinator + Prisma data)
+     [7b] ─────────►           (needs coordinator state; parallel with 7)
           [8] ────────────►    (needs signal endpoints + event schemas)
 ```
 
@@ -1747,6 +1864,8 @@ Layer B success criteria (attention pricing, discovery, graph accumulation, line
 | PREVIEW_TEXT_CHARS | 500 | Max characters for text excerpt previews |
 | MAX_ASSET_LIST_ITEMS | 1,000 | Cap items per AssetListV1 (prevents unbounded events) |
 | MIN_BOUNTY_SATS_DEFAULT | 50 | Default host profitability threshold for min_bounty_sats |
+| SNAPSHOT_INTERVAL_EPOCHS | 100 | State snapshot every 100 epochs (~17 days) |
+| ANCHOR_INTERVAL_EPOCHS | 6 | Epoch root anchored to Bitcoin every 6 epochs (~1/day) |
 
 **Derived (not tunable)**:
 - PoW difficulty: `TARGET_BASE >> floor(log2(receipt_count + 1))`
@@ -1809,11 +1928,19 @@ Nix flake or pinned Docker multi-stage build. CI verifies reproducible output. P
 
 One Bitcoin transaction per epoch (or per day) commits a 32-byte merkle root of tips, pin-contract deltas, receipt sets, and payouts. Taproot tweak or OP_RETURN. Everything else stays off-chain but becomes auditable against that root. Anyone can verify bounty ledger history offline given published data.
 
-**Survival**: fraud becomes detectable. Founder's accounting verifiable against Bitcoin-timestamped commitments.
+The anchored epoch root also serves as the trust anchor for state snapshots (see §Event Log Growth + Compaction). A new node verifies a snapshot against the anchored root — no need to replay the full event history. This is what makes "replay from genesis" optional rather than required, enabling practical bootstrap at scale.
+
+```
+epoch_root = SHA256(epoch_summary_merkle_root || state_snapshot_hash)
+```
+
+Committed on-chain: one 32-byte value per epoch (or batched: one per day covering 6 epochs). At 1 tx/day with Taproot tweak: ~$0.50/day at typical fee rates.
+
+**Survival**: fraud becomes detectable. Founder's accounting verifiable against Bitcoin-timestamped commitments. Snapshots verifiable without trusting the publisher.
 
 ### Longevity Test
 
-> If founder is permanently removed at midnight: do receipts still mint (L1), hosts still discoverable (L2), portal still reachable (L3), state still computable (L4), epochs still settle (L5), code still buildable (L6), accounting still auditable (L7)? Every "no" is a failure.
+> If founder is permanently removed at midnight: do receipts still mint (L1), hosts still discoverable (L2), portal still reachable (L3), state still computable (L4), epochs still settle (L5), code still buildable (L6), accounting still auditable (L7)? Can a new node bootstrap from a verified snapshot without the founder's coordinator (L7 + §Event Log Growth)? Every "no" is a failure.
 
 R&D tracks (FROST threshold mints, on-chain bounty accounting, erasure coding, proof-of-storage, payment rail diversity) documented separately.
 

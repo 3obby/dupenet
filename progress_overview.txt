@@ -376,6 +376,52 @@ Exit: GET /host/<pk>/scorecard returns full automatic reputation.
       GET /content/<cid>/signals returns resilience + market quote.
       GET /content/recent returns a browsable feed of announced content.
 
+## Sprint 7d.1 — Event Log Compaction + Snapshot Bootstrap (packages/physics + apps/coordinator)
+
+Event stream grows without bound. At scale, new nodes can't replay from genesis.
+Snapshots with inclusion proofs enable fast bootstrap; receipt rollups reduce gossip volume.
+Design the format now (MVP may not exercise full anchoring), so the transition
+from "trust the coordinator" to "verify against Bitcoin" is config, not architecture.
+DocRef: MVP_PLAN:§Event Log Growth + Compaction, §Longevity L7
+
+[ ] StateSnapshotV1 schema             physics: epoch, merkle roots for each state domain, event_count, prev_hash
+    - bounty_pools: MerkleRoot (all cid → balance pairs)
+    - host_registry: MerkleRoot (all host_pubkey → status, stake, score, pricing)
+    - content_index: MerkleRoot (all cid → announce_id, list_ids)
+    - host_serves: MerkleRoot (all host → cid pairs)
+    - pin_contracts: MerkleRoot (all active pins)
+    - snapshot_hash = SHA256(canonical(StateSnapshotV1 minus snapshot_hash))
+[ ] Merkle tree library                physics: build tree from sorted key-value pairs, generate inclusion proofs, verify proofs
+    - deterministic: same inputs always produce same root
+    - O(log N) inclusion proof per entry
+    - compatible with existing binary merkle (packages/physics/src/merkle.ts)
+[ ] Snapshot generator                 coordinator: materialize current Prisma state into StateSnapshotV1
+    - triggered at epoch boundaries (every SNAPSHOT_INTERVAL_EPOCHS = 100 epochs)
+    - builds merkle trees from BountyPool, Host, HostServe, PinContract tables
+    - stores snapshot in Postgres (or as content-addressed blob)
+[ ] GET /snapshot/latest               returns most recent snapshot + epoch number
+[ ] GET /snapshot/:epoch               returns snapshot at specific epoch boundary
+[ ] GET /snapshot/:epoch/proof/:key    returns merkle inclusion proof for a specific entry
+    - e.g. proof that CID X has bounty Y in the snapshot at epoch N
+[ ] Receipt rollup in epoch settlement EpochSummary stores receipt merkle_root + counts only
+    - raw individual receipts archived (queryable) but not propagated in gossip
+    - reduces event stream volume at scale (receipts are highest-volume event type)
+[ ] GET /bootstrap                     fast node sync: returns latest snapshot + events since snapshot
+    - new node calls this instead of replaying full history
+    - response: { snapshot: StateSnapshotV1, events_since: Event[], current_epoch: u32 }
+[ ] Snapshot verification              verify snapshot_hash against published epoch_root
+    - MVP: trust coordinator signature on snapshot (same trust model as current coordinator)
+    - Future: verify against Bitcoin-anchored epoch_root (when L7 active)
+    - Verification is O(1): check hash, optionally check BTC anchor
+[ ] Snapshot + inclusion proof tests   physics: build snapshot, generate proof, verify proof, tamper detection
+    - verify correct root from known data
+    - verify inclusion proof for specific key
+    - reject proof against wrong root / tampered data
+
+Exit: coordinator generates snapshots every 100 epochs. GET /bootstrap returns snapshot + recent events.
+      New node materializes state from snapshot (seconds, not hours). Inclusion proof verifies
+      "CID X has bounty Y" against snapshot merkle root in O(log N).
+
 ## Sprint 7e — Web Content Surface
 
 The page that makes content visible and actionable. The recipient of a shared link
@@ -483,7 +529,10 @@ REMAINING POLISH (non-blocking, do when convenient)
 [ ] Runtime schema validation           TypeBox schemas defined but Value.Check not called on ingest
 [ ] Stake locking via LND               verify stake payment on host registration (currently stubbed)
 [ ] Deterministic Docker builds         Nix flake or pinned multi-stage (DocRef: MVP_PLAN:§Longevity L6)
-[ ] Epoch root anchoring                Bitcoin transaction per epoch with merkle root (DocRef: MVP_PLAN:§Longevity L7)
+[ ] Epoch root anchoring                Bitcoin tx per epoch: SHA256(epoch_summary_root || snapshot_hash) (DocRef: MVP_PLAN:§Longevity L7)
+    - makes state snapshots trustlessly verifiable (no need to trust coordinator)
+    - depends on Sprint 7d.1 (snapshot format must exist first)
+    - Taproot tweak or OP_RETURN, ~$0.50/day at 1 tx/day covering 6 epochs
 
 
 LEGEND: [x] done  [~] partial/stub  [ ] not started
