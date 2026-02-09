@@ -66,7 +66,7 @@ External adopters use Layer A as replaceable infrastructure. They store `asset_r
 
 ### Protocol vs Materializer Boundary
 
-Everything in the system is one of four operations: `PUT blob`, `POST event`, `SUBMIT receipt`, `SETTLE epoch`. Three data types: blob, event, receipt. One economic rule: pools drain to receipt-holders.
+Everything in the system is one of four operations: `PUT blob`, `POST event`, `SUBMIT receipt`, `SETTLE epoch`. Events are blobs (nano-blobs: single-block CIDs ≤16 KiB). Two data types: content-addressed object (blob or event — same fetch path, same economics) and receipt. One economic rule: pools drain to receipt-holders.
 
 **Protocol (frozen-ish, must be true in 5 years)**:
 - Blob addressing (blocks / manifests / asset roots) + L402 paid fetch
@@ -80,11 +80,15 @@ Everything in the system is one of four operations: `PUT blob`, `POST event`, `S
 **Materializer (iterable, change weekly)**:
 - Event kind interpretation (what kind=0x01..0xFF means)
 - Threading / parent pointers / vine model / harmonic allocation
+- Reference graph: extract body edges (`[ref:bytes32]` inline mentions), build weighted citation DAG across all content
+- Graph-weighted importance: economically-weighted PageRank over the reference graph (display signal, not fund transfer)
 - Ranking formulas / signal aggregation / scorecards / supply curves
 - Author profiles / reputation / creator bonuses (funded from materializer fees, not protocol)
 - Pin lifecycle (kind=PIN_POLICY event → materializer enforces drain caps + SLA + alerts)
 - Moderation / content filtering / attester follow lists
-- Discovery feeds / search / collection fan-out
+- Discovery feeds / search / collection fan-out / cluster views (graph-neighborhood browsing)
+- Thread fan-out: resolve thread from ref graph, distribute FUND events across constituent event CIDs (explicit, user-selected)
+- Thread bundles: snapshot thread state as a single content-addressed object (ThreadBundleV1), fundable/pinnable as one CID
 - UI skins (upvote / tip / fortify / pin are all `event.sats > 0` with different amounts)
 
 **Author earnings model**: Protocol pays only servers (receipt-holders). Authors earn by (a) self-hosting (earn as any host), (b) materializer rebates/bonuses from materializer fees, or (c) social capital (reputation → paid inbox, commissions, trust premium). No AUTHOR_SHARE in settlement — that's a permanent bet. The reference materializer MAY distribute a portion of its fees to event authors whose refs receive demand. This is policy, not protocol.
@@ -117,10 +121,11 @@ Product tolls iterate with engagement and are the primary revenue engine at scal
 
 ### Layers
 
-- **Content**: CID → AssetRoot? → FileManifest → Blocks
-- **Events**: EventV1 envelope → kind-specific payload → Pool credits
+- **Content**: CID → AssetRoot? → FileManifest → Blocks (large objects) OR CID → single block (nano-blobs: events ≤16 KiB, small text). All content-addressed, same fetch path, same economics.
 - **Proof**: Receipt (client proof) → EpochSummary → Pool drains
 - **Routing**: Directory → HostList (routing only)
+
+Events ARE content. An EventV1's canonical serialization is a content-addressed object (`event_id = SHA256(canonical(...))`). Events ≤ CHUNK_SIZE_DEFAULT are single-block "nano-blobs" — stored and fetched via `GET /cid/{event_id}` without FileManifest/AssetRoot overhead. The replication market treats a 200-byte comment and a 200-MB video identically in kind; only size changes economics.
 
 ### Core Entities
 
@@ -171,7 +176,7 @@ These are `EventV1.body` schemas the reference materializer interprets. Not prot
 |------|------|-----|------|-------|
 | 0x01 | FUND | pool_key | empty | Tip/upvote/fortify are all FUND with different amounts |
 | 0x02 | ANNOUNCE | CID | title, description, mime, tags, preview, thumb_cid | Human metadata for content |
-| 0x03 | POST | parent_event_id or topic_hash | inline text ≤16KiB | Threading via ref chains; PoW for free, sats to boost |
+| 0x03 | POST | parent_event_id, CID, or topic_hash | inline text ≤16KiB; may contain `[ref:bytes32]` body edges | Comment on any content (blob or event); threading via ref chains; body edges create citation graph; PoW for free, sats to boost |
 | 0x04 | HOST | CID | endpoint, pricing, regions, stake | Host registration + serve announcement |
 | 0x05 | REFUSAL | CID | reason enum + scope | Operator content filtering |
 | 0x06 | ATTEST | CID or event_id | claim enum + confidence + evidence_cid | Third-party claims |
@@ -299,15 +304,17 @@ Keys shared via paid inbox / WoT.
 
 ## Durability Ladder
 
-| Level | Mechanism | Cost | Durability |
-|-------|-----------|------|------------|
-| 0 | Origin only | Free | Ephemeral |
-| 1 | Nostr relays | Free | Days-weeks |
-| 2 | Bundled (INDEX_ROOT anchored) | Base fee | Depends on mirror economics |
-| 3 | Bounty-sustained | Tips flowing | Active replication market |
-| 4 | Gold Tag (Bitcoin inscription) | ~$10-50 | Permanent |
+All content — blobs and events (nano-blobs) — enters the same ladder. A comment starts at level 0, same as an uploaded PDF.
 
-Most content lives at levels 1-3. Gold Tags reserved for civilizational-collapse durability.
+| Level | Mechanism | Cost | Durability | Applies to |
+|-------|-----------|------|------------|------------|
+| 0 | Origin only | Free | Ephemeral | All content (blobs + events) |
+| 1 | Nostr relays (parallel availability) | Free | Days-weeks | Events ≤16 KiB (free extra copies, not source of truth) |
+| 2 | Bundled (INDEX_ROOT anchored) | Base fee | Depends on mirror economics | All content |
+| 3 | Bounty-sustained | Tips / thread fan-out flowing | Active replication market | All content |
+| 4 | Gold Tag (Bitcoin inscription) | ~$10-50 | Permanent | Any CID (including event_id or thread bundle) |
+
+Most content lives at levels 0-3. Events (comments, announcements, fund records) are first-class at every level — no promotion needed. Thread bundles (§Thread Bundles) let entire conversations be funded/pinned at levels 3-4 as a single CID. Gold Tags reserved for civilizational-collapse durability.
 
 ---
 
@@ -837,23 +844,156 @@ Collections are signed events, not protocol entities. The blob layer stays dumb.
 
 - Uploader publishes kind=LIST event grouping CIDs with human-readable names
 - Anyone can publish their own list referencing the same CIDs (different curation, different metadata)
-- Funding a collection = materializer fan-out: resolve list → credit each constituent pool proportionally
+- Funding a collection = materializer fan-out: resolve list → credit each constituent pool (strategy-selected)
 - Bounty pools remain per-CID (hosts don't need to understand collections)
 
 Multiple announcements and lists for the same CID are expected. Metadata quality is a service — better metadata drives more consumption, more consumption drives more receipts.
 
-### Collection Fan-Out (Tipping a List)
+### Durability Model (Unified — Events Are Blobs)
+
+There is one content plane, not two. Every content-addressed object — whether a 200-MB video or a 200-byte comment — enters the same replication market with the same economics. The only variable is size (which changes storage cost) and funding (which changes replica count).
+
+**Events are nano-blobs.** An EventV1's canonical serialization is already content-addressed (`event_id = SHA256(canonical(...))`). Events ≤ CHUNK_SIZE_DEFAULT (16 KiB body) are stored as single-block CIDs — no FileManifest, no AssetRoot. Hosts serve them via `GET /cid/{event_id}`, earn egress and epoch rewards like any other content. A comment is born as a content object, not promoted into one. No class system, no promotion threshold, no materializer gate.
+
+**Nano-blob fetch path:** `GET /cid/{event_id}` returns the canonical EventV1 bytes directly. Same L402 gate, same receipt minting, same bounty pool economics. The only difference from large files: no chunking overhead. This is the `GET /cid/{hash}` path (§Interface: Client → Operator) applied to event content.
+
+**Hierarchy aids discovery, never governs survival.** Graph structure (threads, collections, citations) helps humans navigate. It never creates survival dependencies. A reply can outlive its parent. A correction can outlive the original. A comment linking two documents can become the most important node. Each node's pool funds its own persistence independently.
+
+**No automatic redistribution.** Funding a parent does not automatically flow to children. Funding a thread root does not auto-fund replies. If someone wants a comment preserved, they fund that comment's pool. Collection fan-out (§Collection Fan-Out) and thread fan-out (§Thread Fan-Out) are explicit, user-selected, per-action — not standing policies. No spillover, no subscriptions, no speculative funding of future content.
+
+**Thread fan-out (explicit conversation-level funding).** "No automatic redistribution" is a protocol invariant, but the UX must not make preserving a conversation require N individual actions. The materializer offers a "Fund Thread" action: resolve all events reachable via ref-chain from a thread root, distribute FUND events across constituents using a selected strategy (equal, recency-weighted, importance-weighted, manual). The protocol sees only individual FUND events per event CID. The fan-out is client/materializer policy, identical in mechanism to collection fan-out. See §Thread Fan-Out.
+
+**Nostr relays as parallel availability.** Events published to Nostr relays (NIP-compatible kind numbers) gain free extra copies on an independent, already-decentralized network. Relays are treated as supplementary availability — the system must fully function with only the blob + host market. Relays are not the source of truth; they are free redundancy for small content.
+
+### Reference Graph (Citation DAG)
+
+Every addressable node (CID or event_id) is independently funded, independently replicated, and indexed as a vertex in a weighted directed citation graph. Importance is computed from the graph, not from containers.
+
+**Nodes**: blobs (keyed by CID) and events (keyed by event_id). Both have their own pool. Both can be funded directly.
+
+**Edges** (three types, all derived from events):
+
+| Edge type | Source | Created by |
+|-----------|--------|------------|
+| **ref edge** | `event.ref` field | Automatic — every event points to one parent |
+| **body edge** | `[ref:bytes32]` mentions parsed from POST/ANNOUNCE body | Materializer extracts at ingest time |
+| **list edge** | LIST payload items | Each item creates an edge from list event to constituent CID |
+
+The materializer builds this graph incrementally as events arrive. Every edge is a signed, timestamped, economically-weighted statement.
+
+**Universal engagement**: kind=POST with `ref = CID` allows commenting directly on any blob. kind=POST with `ref = event_id` allows replying to any event (comment, announcement, list, other post). All content is equally commentable — documents, comments, collections, attestations. A comment on a comment is the same action as a comment on a document. The ref field is the only distinction.
+
+**Body edge convention**: inline `[ref:bytes32]` tokens in POST/ANNOUNCE bodies. The materializer extracts these and creates graph edges. This is a materializer convention, not protocol. Example: "The deposition at `[ref:a1b2c3...]` contradicts the flight log at `[ref:d4e5f6...]`" creates two body edges. The author's comment becomes a bridge node linking two documents.
+
+**Graph-weighted importance** (materializer-computed, display signal only):
 
 ```
-fund_collection(list_event_id, total_sats):
-  list = resolve(list_event_id)                # fetch kind=LIST event, extract ListPayload
-  total_size = sum(item.size for item in list.items)
-  for item in list.items:
-    share = floor(total_sats * item.size / total_size)
-    tip(item.cid, share)                       # individual tip per constituent
+importance(node) = direct_pool(node)
+                 + Σ (edge_weight × importance(neighbor)) × decay
 ```
 
-Proportional by file size: larger files get proportionally more (they cost more to store/serve). Alternative strategies (equal split, manual allocation) are client-side decisions.
+Edge weight = sats on the event that created the edge. Decay dampens with hop distance. This is PageRank with economic weights. A funded comment referencing a document increases the document's graph importance without transferring sats to its pool. Display-layer boost, not fund-layer transfer.
+
+**Two scores, always visible**: direct pool (drives host economics / redundancy) and graph importance (drives discovery / leaderboard rank). A node with low direct pool but high graph importance is "underpriced" — structurally central but not yet funded proportionally. The divergence is transparent.
+
+**Events are blobs from birth** (see §Durability Model). No promotion step. A comment's `event_id` IS a CID. Hosts serve it, earn from it, compete for its bounty pool — identical economics to a PDF or video. A funded comment is as durable as the document it's attached to; an unfunded comment persists at durability level 0 (origin-only) and degrades gracefully like any other unfunded content. Retraction is additive: author publishes a correction POST with ref=own_event_id; both exist; the original persists if others fund its pool.
+
+**Cluster view**: `GET /cluster/<ref>?hops=N` returns all nodes reachable within N hops via any edge type, ranked by importance. "Show me everything economically connected to this deposition." The information neighborhood, not an arbitrary flat list.
+
+**Emergent structure**: over time, the citation graph self-organizes. Heavily-referenced documents become primary sources (high in-degree). Comments synthesizing multiple documents become bridge nodes (high betweenness). Clusters of mutual references become research fronts. No curation needed — topology IS knowledge organization.
+
+**Orphan detection**: high direct pool, low graph connectivity. The materializer surfaces these as "needs analysis" — documents with funding but no discussion. First analysts earn positional advantage in the graph (their comments become the only bridges).
+
+### Collection Fan-Out (Funding a List or Cluster)
+
+Client selects a distribution strategy when funding a collection or cluster. The protocol sees individual FUND events per constituent — strategy is materializer + client policy.
+
+```
+fund_collection(list_event_id, total_sats, strategy):
+  items = resolve(list_event_id)               # LIST items or cluster nodes
+
+  if strategy == SIZE_WEIGHTED:
+    share(item) = floor(total_sats * item.size / total_size)
+  elif strategy == EQUAL:
+    share(item) = floor(total_sats / len(items))
+  elif strategy == DEMAND_WEIGHTED:
+    share(item) = floor(total_sats * item.receipt_velocity / total_velocity)
+  elif strategy == IMPORTANCE_WEIGHTED:
+    share(item) = floor(total_sats * item.graph_importance / total_importance)
+  elif strategy == MANUAL:
+    share(item) = client_specified_allocation[item]
+
+  for item in items:
+    fund(item.ref, share(item))                # individual FUND event per constituent
+```
+
+| Strategy | Logic | When to use |
+|----------|-------|-------------|
+| **Size-weighted** | Proportional to byte count | "Keep these files alive proportional to storage cost" |
+| **Equal** | Even split | "I value these equally" |
+| **Demand-weighted** | Proportional to receipt velocity | "Amplify what people are already consuming" |
+| **Importance-weighted** | Proportional to graph-weighted importance | "Fund what the citation graph says matters most" |
+| **Manual** | Client specifies per-item allocation | Power users, targeted intervention |
+
+Default: size-weighted (backward-compatible). Demand-weighted and importance-weighted require materializer signal endpoints (§Signal Layer).
+
+### Thread Fan-Out (Funding a Conversation)
+
+Same mechanism as collection fan-out, applied to a thread root. The materializer resolves the ref-chain DAG from a thread root, then distributes FUND events across constituent event CIDs. The protocol sees only individual FUND events — thread resolution is materializer + client policy.
+
+```
+fund_thread(thread_root_event_id, total_sats, strategy):
+  events = resolve_thread(thread_root_event_id)   # all events reachable via ref chains
+
+  if strategy == THREAD_EQUAL:
+    share(e) = floor(total_sats / len(events))
+  elif strategy == THREAD_RECENCY:
+    share(e) = floor(total_sats * recency_weight(e.ts) / total_recency)
+  elif strategy == THREAD_IMPORTANCE:
+    share(e) = floor(total_sats * e.graph_importance / total_importance)
+  elif strategy == THREAD_DEPTH:
+    share(e) = floor(total_sats * (1 / (1 + depth(e))) / total_depth_weight)
+  elif strategy == MANUAL:
+    share(e) = client_specified_allocation[e]
+
+  for e in events:
+    fund(e.event_id, share(e))                     # individual FUND event per constituent
+```
+
+| Strategy | Logic | When to use |
+|----------|-------|-------------|
+| **Thread-equal** | Even split across all events in thread | "I value this entire conversation" |
+| **Thread-recency** | Weighted toward recent replies | "Keep the discussion alive at the frontier" |
+| **Thread-importance** | Proportional to graph-weighted importance | "Fund the most structurally central comments" |
+| **Thread-depth** | Weighted toward root + early replies (1/depth decay) | "Preserve the core argument, let tangents degrade" |
+| **Manual** | Client specifies per-event allocation | Power users |
+
+Default: thread-equal. This is the "Fund Thread" button UX — one click preserves an entire conversation. The action is explicit (user chose to fund the thread), the distribution is transparent (show per-event allocation before confirming), and the protocol sees only standard FUND events.
+
+### Thread Bundles (Atomic Conversation Snapshots)
+
+A thread bundle is a content-addressed snapshot of a conversation at a point in time. It solves "preserve this discussion right now" as a single fundable/pinnable object.
+
+```
+ThreadBundleV1 {
+  thread_root: event_id          // root event of the thread
+  events: [EventV1]              // all events in thread at snapshot time (ordered by ref-chain)
+  merkle_root: bytes32           // merkle root of event_ids (verifiable completeness)
+  snapshot_epoch: u64            // when the snapshot was taken
+  bundler: pubkey                // who created the bundle
+  sig: signature                 // bundler's attestation of completeness
+}
+```
+
+The bundle's canonical serialization gets a CID. It enters the replication market as a single object. Funding the bundle CID preserves the entire conversation atomically — hosts serve the bundle, earn from it, compete for its bounty pool.
+
+**Completeness proof**: anyone with the constituent events can recompute `merkle_root` and verify the bundle contains exactly the events claimed. Missing events produce a different root.
+
+**Self-verifying thread integrity**: because `event.ref` is inside the hashed event identity, the thread DAG is reconstructable from the bundle's events alone. No materializer needed to verify structure — follow ref pointers, check that every ref resolves to another event in the bundle (or to an external CID for root-level comments on blobs).
+
+**Snapshot vs live**: bundles are point-in-time snapshots. New replies after the snapshot are not included. To update, create a new bundle (new CID). Both versions can coexist; the newer bundle supersedes the older for completeness but doesn't invalidate it.
+
+**Crisis use case**: during a censorship spike, a single "Fund Thread Bundle" action preserves the full discussion state. One CID, one pin contract, one bounty pool — hosts replicate the whole conversation.
 
 ---
 
@@ -889,8 +1029,13 @@ Reputation signals are exhaust from normal protocol operation. No ratings, no re
 | Host diversity | Distinct regions/ASNs of serving hosts | Geographic resilience |
 | Epoch survival | Consecutive epochs with active receipts | Sustained demand over time |
 | Estimated sustainability | bounty / drain_rate at current host count | How long funding lasts |
+| Graph importance | Weighted PageRank over citation DAG (ref edges + body edges + list edges) | Structural centrality — how referenced by funded analysis |
+| In-degree (funded) | Count of funded events whose ref or body edges point here | How many paid statements cite this node |
+| Orphan score | High direct pool, low graph connectivity | Content with funding but no discussion — "needs analysis" |
 
-Composite **resilience score** = weighted formula over these inputs. Client-computable, auditable, not authoritative.
+Composite **resilience score** = weighted formula over direct pool inputs. Client-computable, auditable, not authoritative.
+
+**Graph importance** is a separate score from resilience. Resilience = "will hosts keep this alive?" (direct pool driven). Graph importance = "is this structurally central to funded discourse?" (citation driven). Both displayed; neither subsumes the other.
 
 ### Author Signals (Pseudonymous, Automatic)
 
@@ -941,8 +1086,9 @@ This is a real market quote from counterparty signals, not a formula estimate. A
 | Fake uptime | Spot-checks are protocol-initiated, not self-reported |
 | Inflate tenure | Time is unfakeable |
 | Self-tip to boost content | Costs real sats. If no one else tips, content dies when your money runs out |
+| Graph manipulation (link farming) | Each body edge costs base_fee + sats; edge diversity weighted by funder count, not just sats; burst edges dampened by temporal spread; star-topology anomalies flagged; direct pool and graph importance shown separately (divergence is transparent) |
 
-All positive signals are economically costly to produce. Self-promotion is taxed, not prevented. At scale, self-farming is demand subsidy at cost (same principle as receipt anti-sybil: §Host Self-Farming).
+All positive signals are economically costly to produce. Self-promotion is taxed, not prevented. At scale, self-farming is demand subsidy at cost (same principle as receipt anti-sybil: §Host Self-Farming). Graph manipulation is analogous: creating fake citation structure costs real money per edge and produces transparent anomalies in the two-score display.
 
 ---
 
@@ -1056,17 +1202,24 @@ This is the global importance scoreboard — content ranked by economic commitme
 Deliverables:
 
 Core surface:
-- Global leaderboard: `/` — all content ranked by economic commitment (pool balance × funder diversity × receipt velocity). Real-time. The front page of the importance index.
+- Global leaderboard: `/` — all content ranked by dual score: direct pool (economic commitment) and graph importance (citation centrality). Both columns visible. Real-time. The front page of the importance index.
 - Topic leaderboards: `/topic/<tag>` — filtered by topic tag. Ranked the same way.
 - Content page: `/v/<ref>` — single asset view with full instrument cluster:
   - Content preview (thumbnail/excerpt, free tier)
+  - Dual score display: direct pool balance + graph-weighted importance (divergence visible)
   - Funding scoreboard: total sats, unique funders, funding trajectory chart
   - Replica map: hosts serving this content, by country/ASN
   - Sustainability meter: estimated months of survival at current drain rate
-  - Thread: discussion (kind=POST events), weighted by sats committed per post
+  - Thread: discussion (kind=POST events with ref=this CID or event_id), weighted by sats committed per post
+  - Comment box: POST kind=POST with ref=content ref (PoW for free; optional sats to boost). Universal — identical UX on blobs, events, collections, and other comments. Comments are nano-blobs from birth — same fetch path, same economics as any content.
+  - Body edge display: inbound citations ("referenced by N funded analyses") and outbound citations ("references N other documents")
   - Fortify button: Lightning payment → POST /event (one click, one action)
-- Collection page: `/c/<list_event_id>` — grouped content with per-asset signals + aggregate resilience
-- Thread page: `/t/<event_id>` — threaded discussion view, per-post sats visible
+  - Fund Thread button: Lightning payment → thread fan-out (resolve ref-chain → distribute FUND events across all events in thread). Strategy selector (equal/recency/importance/depth/manual). Shows per-event allocation before confirming. One click preserves an entire conversation.
+- Collection page: `/c/<list_event_id>` — grouped content with per-asset signals + aggregate resilience. Fan-out strategy selector (size/equal/demand/importance/manual).
+- Cluster page: `/g/<ref>` — graph neighborhood: all nodes reachable within N hops via ref/body/list edges, ranked by graph importance. The information neighborhood view. "Show me everything economically connected to this document."
+- Thread page: `/t/<event_id>` — threaded discussion view, per-post sats visible. Comments on comments rendered as nested tree. Fund Thread button prominent. Thread bundle snapshot action: "Preserve this conversation" → creates ThreadBundleV1 → single CID, fundable/pinnable as one object.
+- Thread bundle page: `/b/<bundle_cid>` — archived conversation snapshot with completeness proof (merkle root verifiable). Shows all events in thread at snapshot time, per-event funding, bundle-level funding counter.
+- Orphan view: `/orphans` — content with high direct pool but low graph connectivity. "Needs analysis" — incentivizes first analysts.
 - Host scorecard: `/h/<pubkey>` — host reputation dashboard
 - Market quote display: "Add X sats → est. Y copies for Z days" from supply curve
 
@@ -1102,7 +1255,7 @@ Crisis readiness (before first spike):
 
 Dependencies: steps 6-7 (needs EventV1 + signal endpoints)
 
-Exit: share `https://ocdn.is/v/<ref>` → recipient sees funded content with Fortify button and live funding counter. Click Fortify → counter updates in seconds. `/` shows the global leaderboard. `/verify/<ref>` shows inclusion proof anchored to Bitcoin. News sites embed the widget. If a spike hits, the system degrades gracefully, not catastrophically.
+Exit: share `https://ocdn.is/v/<ref>` → recipient sees funded content with Fortify button, Fund Thread button, live funding counter, and comment box. Click Fortify → counter updates in seconds. Comment → thread appears as nano-blob (comment CID fetchable via `GET /cid/{event_id}`), body edges create citation links. Fund Thread → all comments in thread receive funding proportionally, sustainability meters update. "Preserve this conversation" → ThreadBundleV1 snapshot created, single CID fundable/pinnable. `/` shows the global leaderboard with dual scoring (direct pool + graph importance). `/t/<event_id>` shows threaded discussion with per-post funding. `/b/<bundle_cid>` shows archived conversation snapshot with completeness proof. `/g/<ref>` shows the citation neighborhood. `/orphans` surfaces undiscussed funded content. `/verify/<ref>` shows inclusion proof anchored to Bitcoin. News sites embed the widget. If a spike hits, the system degrades gracefully, not catastrophically.
 
 ---
 
@@ -1412,6 +1565,7 @@ Deferred design decisions from external review. Each has a trigger condition —
 | 9 | Audit griefing / sandbagging | L402 cost gates spam audits | Audit volume > 100/day | Cap audit frequency per (host, cid, epoch). PRF-based audit target selection (auditable but unpredictable). Auditor bond separates "cost to audit" from "revenue to auditee." Regional selective failure: operational fix (Tor), not protocol fix. |
 | 11 | Client safety (beyond denylist) | CID denylist + MIME gate + magic byte check (§Client Safety Layer) | First malware incident in production | Attester pack distribution model. Encrypted blob opacity to attesters. |
 | 12+A | Materializer market + paid event ingest | Founder is sole materializer; MaterializerV1 schema + MaterializerPricingV1 defined; DirectoryV1 includes `materializers[]`; coordinator rate-limits for free | Second materializer operator expresses interest | Key insight: materializers are metadata hosts — same L402, same market. Ingest = PUT /block equivalent; queries = GET /block equivalent. Interface defined (§MaterializerV1). Remaining: relay-vs-materializer separation at scale, consistency model for divergent state, economic tuning (ingest fee vs query fee balance). |
+| 13 | ~~Thread/collection bundles~~ **PULLED INTO MVP (Step 8)** | ThreadBundleV1 defined (§Thread Bundles). Thread fan-out + Fund Thread button + thread bundle page in Step 8 deliverables. | — | Thread bundles pulled forward. ThreadBundleV1: content-addressed snapshot of thread state (events + merkle root). Fundable/pinnable as one CID. Self-verifying completeness via ref-chain DAG. Collection bundles (non-thread) remain deferred until request overhead dominates. |
 | B | Founder service replacement specs | Longevity section L1-L7 | Pre-launch documentation pass | For each service (directory, mints, aggregator, snapshots, provisioning, materializer): inputs, outputs, swap procedure. Test: "can a stranger replace it without contacting the founder?" |
 
 ---

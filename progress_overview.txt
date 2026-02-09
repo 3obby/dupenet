@@ -353,14 +353,26 @@ All endpoints are materializer conventions — other materializers may offer dif
 [ ] GET /feed/recent                    recent ANNOUNCE events (paginated, filterable by tags)
 [ ] GET /feed/funded                    pool_keys ranked by balance (replaces GET /bounty/feed)
 [ ] GET /host/:pubkey/scorecard         host reputation (from HOST events + spot-checks + receipts)
-[ ] GET /content/:ref/signals           content resilience (from FUND events + receipts + HOST events)
+[ ] GET /content/:ref/signals           content resilience + graph importance (dual score)
 [ ] GET /author/:pubkey/profile         pseudonymous reputation (events by pubkey + demand on their content)
 [ ] GET /market/quote                   supply curve from host min_bounty_sats thresholds
 [ ] GET /thread/:event_id               thread view: resolve ref chain from kind=POST events, return tree
+[ ] GET /cluster/:ref?hops=N            graph neighborhood: all nodes within N hops via ref/body/list edges
+[ ] Body edge extraction                parse [ref:bytes32] tokens from POST/ANNOUNCE bodies at ingest
+    - Prisma model: BodyEdge { source_event_id, target_ref, edge_sats }
+    - index: (target_ref) for inbound citation queries
+[ ] Graph importance computation        weighted PageRank over citation DAG (ref + body + list edges)
+    - incremental: recompute affected neighborhoods on new events
+    - expose via GET /content/:ref/signals (graph_importance field)
+[ ] Event-to-blob promotion             funded events above threshold serialized as CIDs → PUT /block
+    - materializer policy: threshold configurable (e.g. 1000 sats)
+    - promoted events enter normal replication market
+[ ] GET /orphans                        high direct pool, low in-degree — "needs analysis" content
 
 Exit: POST /event accepts all kinds. GET /events returns filtered stream.
-      GET /feed/funded ranks by pool balance. GET /thread/<id> returns discussion tree.
-      Signal endpoints are materializer views — not protocol.
+      GET /feed/funded ranks by dual score (direct pool + graph importance).
+      GET /cluster/<ref> returns citation neighborhood. GET /orphans surfaces undiscussed funded content.
+      GET /thread/<id> returns discussion tree. Signal endpoints are materializer views — not protocol.
 
 ## Sprint 7d.1 — Event Log Compaction + Snapshot Bootstrap (packages/physics + apps/coordinator)
 
@@ -384,26 +396,38 @@ The page that makes content visible, fundable, and debatable. Recipients see con
 resilience signals, a Fund button, and threaded discussion. This IS the product.
 
 [ ] Scaffold web app                   apps/web, Next.js, server-renders from materializer APIs
-[ ] Content landing page: /v/<ref>     single asset view
+[ ] Content landing page: /v/<ref>     single asset view (blobs AND events — same UX)
     - header: title, description (from kind=ANNOUNCE events), kind, mime, size
     - preview: thumbnail or text excerpt
-    - instrument cluster: pool balance, replica count, epoch survival, demand trend
+    - dual score display: direct pool balance + graph-weighted importance
+    - instrument cluster: replica count, epoch survival, demand trend, sustainability
+    - inbound citations: "referenced by N funded analyses" (body edge in-degree)
+    - comment box: POST kind=POST with ref=content ref (PoW for free; optional sats)
+      universal — identical on blobs, events, collections, comments
     - Fund button: amount slider → POST /event kind=FUND (one action, all amounts)
 [ ] Collection page: /c/<event_id>     grouped content view (from kind=LIST events)
     - item list with per-asset signals + aggregate resilience
-    - Fund button: fan-out across constituents (materializer resolves)
+    - fan-out strategy selector (size/equal/demand/importance/manual)
+    - Fund button: fan-out across constituents (materializer resolves per strategy)
+[ ] Cluster page: /g/<ref>             graph neighborhood view
+    - all nodes reachable within N hops via ref/body/list edges
+    - ranked by graph importance
+    - "show me everything economically connected to this document"
 [ ] Thread page: /t/<event_id>         threaded discussion view
-    - renders kind=POST event ref chains as tree
-    - per-post: sats committed, unique funders, author age
+    - renders kind=POST event ref chains as tree (comments on comments nested)
+    - per-post: sats committed, unique funders, author age, body edge links
     - reply box: POST kind=POST with ref=parent_event_id (PoW for free; optional sats to boost)
+[ ] Orphan view: /orphans              high pool / low graph connectivity — "needs analysis"
 [ ] Market quote display               "Add X sats → est. Y copies for Z days" from supply curve
 [ ] Lightning payment (browser)        Fund button → WebLN auto-pay + QR fallback → POST /event
 [ ] Free preview serving               gateway serves thumb CIDs / small blocks without L402
 [ ] Host scorecard page: /h/<pubkey>   host reputation view from scorecard endpoint
 
-Exit: share https://ocdn.is/v/<ref> → content + signals + Fund button.
-      /t/<event_id> → monetized threaded discussion. Flame wars cost sats, not words.
-      One Lightning payment via one endpoint. One action: fund.
+Exit: share https://ocdn.is/v/<ref> → content + dual scores + Fund + comment box.
+      /g/<ref> → citation neighborhood. /orphans → undiscussed funded content.
+      /t/<event_id> → monetized threaded discussion with citation links.
+      Comments work identically on documents, comments, collections, attestations.
+      One Lightning payment via one endpoint. One action: fund or comment.
 
 
 ================================================================================
