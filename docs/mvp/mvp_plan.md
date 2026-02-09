@@ -476,13 +476,19 @@ Step-function durability emerges from host economics, not protocol rules.
 
 ## Egress Pricing (Market Decides)
 
-Hosts set their own prices via `PricingV1`: `min_request_sats` (anti-grief floor), `sats_per_gb` (normal rate), `burst_sats_per_gb` (surge), `min_bounty_sats` (profitability threshold for mirroring), `sats_per_gb_month` (storage cost signal).
+Hosts set their own prices via `PricingV1`: `min_request_sats` (anti-grief floor), `sats_per_gb` (normal rate), `burst_sats_per_gb` (surge), `min_bounty_sats` (profitability threshold for mirroring), `sats_per_gb_month` (storage cost signal), `open_min_pool_sats` (minimum pool balance to serve open-access content without L402; below threshold, host falls back to paid).
 
 **Defaults**: min_request 3 sats | normal 500 sats/GB (~$0.05/GB) | burst 2000 sats/GB. Charge = `max(min_request_sats, ceil(rate × gb))`.
 
 **Free preview tier**: Thumbnails/excerpts ≤16 KiB served without L402 (host opts in). Rate-limited per-IP (60 burst / 10 sustained). Free previews are loss leaders that drive paid fetches.
 
-**Open access tier**: Full content served without L402 for CIDs announced with `access: "open"` (materializer convention on ANNOUNCE events, see §New User Journey). Hosts earn from bounty pool epoch rewards (Fortify funding), not egress. Used for seed content / public-interest material where the value prop is durability + context, not exclusive access. Host opt-in: `PricingV1.serve_open_access: bool`. Rate-limited per-IP same as free preview. The conversion event is Fortify, not L402.
+**Open access tier (sponsored availability)**: Content served without L402 for CIDs announced with `access: "open"` (materializer convention on ANNOUNCE events, see §New User Journey). Used for seed content / public-interest material where the value prop is durability + context, not exclusive access. Open access is not free forever — it is bounty-funded serving with host thresholds.
+
+Host economics: no egress revenue on open-access fetches; hosts earn exclusively from bounty pool epoch rewards (Fortify funding). Hosts serve open content only if the pool meets their threshold: `PricingV1.open_min_pool_sats` (host-configured minimum pool balance to serve open-tier). Below threshold, host declines or falls back to L402. This creates a natural floor: content drops from open to paid when funding dries up. No charity, no free CDN — sponsored availability.
+
+Size constraint: for large files (video, archives), open access serves derived variants only (thumbnails, excerpts, per-page PDF renders, text extracts). Full raw file stays L402-gated unless pool is large enough to justify the bandwidth. For small/medium documents (court filings, text), open access serves the full file. The threshold is host-decided via `open_min_pool_sats` — a host serving video has higher costs and sets a higher threshold.
+
+UI: open-access content pages show "Sponsored by pool — your sats buy replicas, not access." Rate-limited per-IP same as free preview. The conversion event is Fortify, not L402.
 
 **Client behavior**: query cheapest host meeting minimum resilience score, show estimated cost, failover on timeout. Creates competition without governance.
 
@@ -1034,7 +1040,7 @@ Reputation signals are exhaust from normal protocol operation. No ratings, no re
 | Estimated sustainability | bounty / drain_rate at current host count | How long funding lasts |
 | Graph importance | Weighted PageRank over citation DAG (ref edges + body edges + list edges) | Structural centrality — how referenced by funded analysis |
 | In-degree (funded) | Count of funded events whose ref or body edges point here | How many paid statements cite this node |
-| Orphan score | High direct pool, low graph connectivity | Content with funding but no discussion — "needs analysis" |
+| Orphan score | High direct pool + low graph connectivity (few inbound ref/body edges from funded events) + low discussion depth (few/zero kind=POST replies) | "Funded, but under-analyzed" — content with economic commitment but no discourse. Analyst job board. |
 
 Composite **resilience score** = weighted formula over direct pool inputs. Client-computable, auditable, not authoritative.
 
@@ -1414,19 +1420,22 @@ User lands on `/v/<ref>` — a specific Epstein deposition. They see:
 
 The instrument cluster IS the pitch. It answers "why am I here instead of PACER?" without a single word of explanation. PACER doesn't show you that 93 people care enough to pay for this document's survival, or that it's replicated across 4 jurisdictions, or that 12 analysts have published funded commentary linking it to other documents. The content is commodity. The context is the product.
 
-**Open access for seed content**
+**Open access for seed content (sponsored availability)**
 
 Seed content — material that's already publicly available and serves as the go-to-market hook (Epstein court filings, FOIA releases, deplatformed archives with creator consent) — MUST be fully readable without L402. The L402 wall at the moment of peak interest kills the viral loop dead.
 
-The economics still work:
-- Hosts earn from bounty pool epoch rewards (funded by Fortify), not egress on seed content
+Open access is NOT "all content is free." It is bounty-funded serving with host thresholds. Content is open only while the pool supports it. When funding dries up, content drops to paid or preview. No charity, no free CDN.
+
+The economics:
+- Hosts earn from bounty pool epoch rewards (funded by Fortify), not egress on open content
+- Hosts serve open content only if `pool >= host.open_min_pool_sats` (host-configured). Below threshold, host declines or falls back to L402. This is a host-level policy decision, not protocol.
 - Free reading is the loss leader. The conversion event is Fortify, not L402.
 - "Free to read, pay to preserve" is a sentence anyone understands. "Pay 3 sats to read what you can get for free on PACER" is not.
-- Host opt-in: `PricingV1.open_access_cids[]` or a flag on ANNOUNCE events. Hosts who serve open-access content earn from bounty pools only, no egress. This is a host-level policy decision, not protocol.
+- For large files (video, archives): open access serves derived variants only (per-page PDF renders, text extracts, thumbnails). Full raw file stays L402 unless pool is massive. For small/medium documents (court filings, text): open access serves the full file.
 
-Open access is NOT "all content is free." It's a specific category for seed/public-interest content where the value prop is durability and context, not exclusive access. Creator-uploaded paid content (clips, data, files) keeps its L402 gate — that's Flywheel A (marketplace). Open access is Flywheel B (attention → funding → replication).
+Open access is Flywheel B (attention → funding → replication). Creator-uploaded paid content (clips, data, files) keeps its L402 gate — that's Flywheel A (marketplace). The two coexist; hosts self-select based on economics.
 
-Implementation: ANNOUNCE event includes `access: "open" | "paid"` field (materializer convention, not protocol). Default: `paid`. Founder sets `open` on seed content. Hosts choose whether to honor it (free serving = no egress revenue, but access to bounty pool from Fortify funding). The materializer renders content inline vs behind paywall based on this field.
+Implementation: ANNOUNCE event includes `access: "open" | "paid"` field (materializer convention, not protocol). Default: `paid`. Founder sets `open` on seed content. Hosts choose whether to honor it based on their `open_min_pool_sats` threshold. The materializer renders content inline vs behind paywall based on this field. UI shows "Sponsored by pool — your sats buy replicas, not access."
 
 **The Fortify conversion (zero-to-sats)**
 
@@ -1465,7 +1474,7 @@ The user who arrived on a single document now wants to explore. The collection p
 
 The cluster view (`/g/<ref>`) is the power feature that no other platform offers. "Show me everything economically connected to this deposition." The user clicks through from a document and sees its citation neighborhood: which analyses reference it, which other documents those analyses also cite, which documents are heavily funded but have no analysis yet (orphans).
 
-Orphan callouts: prominent banner on documents with high funding but low graph connectivity. "This $2,000 bounty document has no analysis yet. Be the first." This creates a gold-rush dynamic for journalists, researchers, and commentators — the funded but undiscussed documents are both the highest-value contribution opportunity and the most obvious gap. Early analysts earn permanent positional advantage in the citation graph (their comments become the only bridge nodes).
+Orphan callouts: prominent banner on documents meeting the orphan criteria: (a) high direct pool, (b) low graph connectivity (few inbound ref/body edges from other funded events), (c) low discussion depth (few or zero kind=POST replies). "Funded, but under-analyzed." / "This $2,000 bounty document has no analysis yet. Be the first." This creates a gold-rush dynamic for journalists, researchers, and commentators — the funded but undiscussed documents are both the highest-value contribution opportunity and the most obvious gap. Early analysts earn permanent positional advantage in the citation graph (their comments become the only bridge nodes). Hard to game: inflating the pool costs real sats, and reducing graph connectivity means not linking to the node — which defeats the purpose of gaming visibility.
 
 **The commenter journey**
 
@@ -1522,7 +1531,94 @@ The new user journey implies specific additions to the Step 8 build:
 - **Velocity indicators on leaderboard**: rank change arrows, trending badges, "new" labels.
 - **Collection sort/filter**: sortable by funding, date, citations, type. Filter by tags.
 - **Inline citation rendering**: `[ref:...]` tokens in comments rendered as clickable links to referenced content.
-- **ANNOUNCE `access` field**: materializer convention. `"open"` = full content served free; `"paid"` = L402 gated. Default `"paid"`.
+- **ANNOUNCE `access` field**: materializer convention. `"open"` = sponsored availability (served free while pool meets host threshold); `"paid"` = L402 gated. Default `"paid"`.
+- **`PricingV1.open_min_pool_sats`**: host-configured threshold. Below it, host declines open-access serving or falls back to L402. Prevents free-CDN abuse.
+- **"Sponsored by pool" UI copy**: open-access content pages show "Sponsored by pool — your sats buy replicas, not access" and the Fortify supply quote: "+X sats → est. +Y replicas."
+
+### Client Interaction Model (what the browser actually does)
+
+The browser does three things locally, always: (1) make keys (or borrow them), (2) build + sign EventV1, (3) do PoW off-main-thread. Everything else is HTTP calls to hosts/materializers. The web app (`apps/web`) is SSR (Next.js) for SEO and initial load, client-side JS for all write interactions.
+
+**Identity + keys (Ed25519)**
+
+Primary (normie default): generate keypair on first write action (comment, fund, announce). Store private key encrypted in indexedDB (survives browser clear better than localStorage). Public key in localStorage. Offer export (download / copy base64) and import (paste / file). Identity chip UI on every page: pubkey short-form, export/import, "use Nostr extension" if detected, "reset identity" (danger zone). This is what makes "comments are first-class content" real for normies.
+
+Upgrade path (power users): NIP-07 (Nostr browser extension) = "Use existing key." If NIP-07 present on `window.nostr`, prefer it; otherwise fall back to local key. Same Ed25519 curve, same signing interface. Cross-device identity without custodial accounts.
+
+"No key" mode (read-only): browse, view clusters, verify proofs, see counters, explore the leaderboard — no key needed. Any write action prompts key creation (one tap). Reading is frictionless; writing has exactly one gate.
+
+**Event submission pipeline**
+
+Every user write action (comment, fund, announce, list, pin) follows the same path:
+
+*A) Compose.* Browser constructs `EventV1 { v, kind, from=pk, ref, body, sats, ts }` using the physics library (must work in browser context — it already uses `@noble/hashes` which runs in browsers).
+
+*B) If sats > 0 (Fortify, funded comment, pin budget):*
+1. Compute `event_hash = SHA256(canonical(EventV1 minus sig))` — intent binding
+2. Request invoice: `POST /payreq { sats, event_hash }` — materializer returns LN invoice with event_hash in memo
+3. Pay via WebLN (auto) or QR (manual)
+4. Receive `payment_proof` (preimage or payment_hash confirmation)
+5. Sign event, submit: `POST /event { event, payment_proof }`
+
+Intent binding prevents pay-for-one-submit-another: the materializer rejects events whose `event_hash` doesn't match the paid invoice's memo.
+
+*C) If sats == 0 (free comment, free announce):*
+1. Compute PoW in Web Worker (never blocks UI — show "publishing..." spinner):
+   - `challenge = SHA256("EV1_POW" || from || ts || kind || ref || SHA256(body))`
+   - Find `nonce` where `SHA256(challenge || nonce) < EVENT_POW_TARGET`
+   - EVENT_POW_TARGET calibrated for ~200ms on mobile (same ballpark as receipt PoW)
+2. Attach `pow_nonce` + `pow_hash` in event body extension field
+3. Sign event
+4. Submit: `POST /event { event }`
+
+Note: event PoW (spam defense for free writes) is distinct from receipt PoW (anti-sybil for epoch rewards). Different challenge prefix ("EV1_POW" vs "RECEIPT_V2"), different purpose, same mechanism.
+
+**Real-time UX (SSR + SSE)**
+
+- Page loads server-rendered (SEO + fast first paint) for `/`, `/v/<ref>`, `/c/<id>`, `/t/<id>`
+- Client opens SSE connections:
+  - `GET /sse/global` — leaderboard updates, activity feed events
+  - `GET /sse/ref/<ref>` — per-content: funding counter changes, new comments, replica count updates
+- On submit: optimistic UI insert (comment appears immediately with "pending" state), then reconcile when SSE echoes the confirmed event back
+- SSE message types: `fund_delta` (pool balance change), `new_event` (comment/announce), `replica_change` (host added/removed), `rank_shift` (leaderboard position change)
+
+**Browser upload flow**
+
+Two options. Ship Option 2 first; swap to Option 1 later without breaking anything.
+
+*Option 1 — Client-side chunking (trust-minimal, long-term):* Browser runs the physics chunker directly: `Chunk(file) → blocks[] → SHA256 per block → FileManifestV1 → AssetRootV1`. Then PUT /block, PUT /file, PUT /asset to host. Then POST kind=ANNOUNCE + optional kind=LIST events (signed client-side). Same as CLI, same trust model.
+
+*Option 2 — Upload shim (ships fast, MVP default):* Browser does `POST /upload` (multipart) to materializer. Materializer chunks, pushes to hosts, returns `{ asset_root, file_root, blocks[] }`. Browser then signs and posts ANNOUNCE/LIST events (metadata always signed client-side — the materializer never signs on behalf of the user). Returns identical objects (manifest, asset root) so Option 1 is a drop-in replacement later.
+
+Trust trade-off: Option 2 trusts the materializer to chunk correctly and push to honest hosts. But the returned `asset_root` is verifiable (client can re-hash locally if paranoid). Metadata events are always client-signed regardless. The materializer handles bytes; the user owns their statements.
+
+**Client state (browser)**
+
+| Storage | Contents | Persistence |
+|---------|----------|-------------|
+| indexedDB | Encrypted private key | Survives clear-browsing in most browsers |
+| localStorage | Public key, last-known endpoints (materializers + hosts), cache TTL, Fortify abandonment tracking | Session-durable |
+| In-memory | Current ref, known host set, cheapest host selection, optimistic thread list, pending markers | Page lifetime |
+| indexedDB | Pending event queue (offline writes): signed events stored locally, replayed on reconnection, deduped by event_id | Survives offline, tab close |
+
+The pending event queue connects to §Longevity L2 (client-side event buffer): if all materializer endpoints are unreachable, signed events queue locally and replay on reconnection. FIFO, dedup by event_id. This is how pool re-ignition works after coordinator disruption — clients replay buffered FUND events, pools refill.
+
+**Browser-facing endpoints (MVP subset)**
+
+Materializer:
+- `POST /event` — submit signed EventV1 (with optional payment_proof or pow_nonce)
+- `POST /payreq` — request LN invoice for sats-gated actions (binds to event_hash)
+- `POST /upload` — upload shim (multipart → chunk → push → return asset_root)
+- `GET /events?ref=&kind=&from=&since=` — event query
+- `GET /content/<ref>/signals` — instrument cluster data
+- `GET /feed/funded`, `GET /feed/recent` — leaderboard data
+- `GET /market/quote?ref=&sats=` — supply curve quote
+- `GET /sse/global`, `GET /sse/ref/<ref>` — real-time event streams
+
+Host (direct):
+- `GET /cid/{hash}` — nano-blob or small content (free preview / open access)
+- `GET /asset/{root}`, `GET /file/{root}`, `GET /block/{cid}` — blob layer
+- `PUT /block/{cid}`, `PUT /file/{root}`, `PUT /asset/{root}` — client-side chunking (Option 1)
 
 ---
 
@@ -1586,6 +1682,7 @@ Current design: client fetches all blocks from one host, failover to next on fai
 | W_UPTIME | 0.3 | Score weight: uptime ratio |
 | W_DIVERSITY | 0.2 | Score weight: ASN/geo diversity contribution |
 | AUDIT_REWARD_PCT | 30% | Challenger's share of withheld epoch reward on proven mismatch |
+| AGGREGATOR_FEE_PCT | 3% | MVP default settlement fee (deducted from epoch cap before host split). Market-determined post-MVP. |
 | MIN_REQUEST_SATS | 3 sats | Egress grief floor (covers marginal serving cost) |
 | SATS_PER_GB | 500 | Default egress rate (sustainable for small operators) |
 | BURST_SATS_PER_GB | 2000 | 4× surge pricing |
@@ -1597,10 +1694,12 @@ Current design: client fetches all blocks from one host, failover to next on fai
 | PIN_CANCEL_FEE | 5% | Deducted from remaining budget on early cancellation |
 | FREE_PREVIEW_MAX_BYTES | 16,384 | 16 KiB — max block size served without L402 (thumbnails, excerpts) |
 | EVENT_MAX_BODY | 16,384 | 16 KiB — max EventV1.body size (inline payloads, previews) |
+| EVENT_POW_TARGET | 2^240 | PoW target for free events (same ballpark as receipt PoW). ~200ms on mobile. Challenge prefix "EV1_POW". |
 | PREVIEW_THUMB_WIDTH | 200 px | Default thumbnail width for image/PDF previews |
 | PREVIEW_TEXT_CHARS | 500 | Max characters for text excerpt previews |
 | MAX_LIST_ITEMS | 1,000 | Cap items per kind=LIST event (prevents unbounded payloads) |
 | MIN_BOUNTY_SATS_DEFAULT | 50 | Default host profitability threshold for min_bounty_sats |
+| OPEN_MIN_POOL_SATS_DEFAULT | 500 | Default host threshold for open-access serving; below this pool balance, host falls back to L402 |
 | SNAPSHOT_INTERVAL_EPOCHS | 100 | State snapshot every 100 epochs (~17 days) |
 | ANCHOR_INTERVAL_EPOCHS | 6 | Epoch root anchored to Bitcoin every 6 epochs (~1/day) |
 

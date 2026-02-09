@@ -166,6 +166,92 @@ SPRINT ORDER (Phase 1 — complete)
 
 
 ================================================================================
+DIVERGENCES (code vs mvp_plan.md — fix before or during Sprint 7b)
+================================================================================
+
+Audit date: 2026-02-09. Cross-referenced all completed code against MVP plan spec.
+
+## Fee Model (CRITICAL — every pool credit is economically wrong)
+
+[!] Flat 5% tip fee vs volume-tapering founder royalty
+    - Code: TIP_PROTOCOL_FEE_PCT = 0.05 (flat), applied in bounty-pool.ts creditTip()
+    - Plan: r(v) = 0.15 × (1 + v/125M)^(-0.3155), starts at 15%, volume-based decay
+    - Plan explicitly rejects time-based decay: "Volume-based, not time-based"
+    - Code also has PROTOCOL_FEE_HALVING_YEARS=4, PROTOCOL_FEE_SUNSET_YEARS=20 (time-based — wrong model)
+    - Fix: Sprint 7b. Replace TIP_PROTOCOL_FEE_PCT + time-based constants with founder royalty formula.
+      Add FOUNDER_ROYALTY_R0, FOUNDER_ROYALTY_V_STAR, FOUNDER_ROYALTY_ALPHA to constants.
+      Track cumulative_volume in coordinator state. Remove time-based decay constants.
+
+## Pool Key (blocks event/topic funding)
+
+[!] BountyPool keyed by CID only
+    - Code: Prisma BountyPool.cid: String @id; all routes use /bounty/:cid
+    - Plan: pool_key = bytes32 (can be CID, event_id, or topic hash)
+    - Fix: Sprint 7b. Rename BountyPool.cid → BountyPool.poolKey. Accept any bytes32.
+
+## Gateway Endpoints (missing 2 from interface spec)
+
+[!] No GET /cid/{hash} unified endpoint
+    - Code: only /block/:cid, /file/:root, /asset/:root
+    - Plan: "Events ≤ CHUNK_SIZE_DEFAULT are nano-blobs — fetched via GET /cid/{event_id}"
+    - Fix: Sprint 7b. Add GET /cid/:hash → if single block, serve; if asset, 302 to /asset/.
+
+[!] No free preview tier
+    - Code: dev mode = all free; prod = all L402. No size-based free serving.
+    - Plan: "Thumbnails/excerpts ≤16 KiB served without L402, rate-limited per-IP"
+    - Fix: Sprint 7b. Blocks ≤ FREE_PREVIEW_MAX_BYTES served without L402 when host opts in.
+
+## PricingV1 Schema (missing 4 of 6 fields)
+
+[!] PricingV1 only has min_request_sats + sats_per_gb
+    - Missing: burst_sats_per_gb, min_bounty_sats, sats_per_gb_month, open_min_pool_sats
+    - Progress line 511 claims sats_per_gb_month was added — it wasn't (schema still has 2 fields)
+    - Fix: Sprint 7b. Add all 4 fields to TypeBox schema + Prisma + gateway GET /pricing.
+      min_bounty_sats is critical for supply curve quoting.
+      open_min_pool_sats is critical for open-access tier.
+
+## Constants (extras in code, missing from plan)
+
+[!] Code has constants not in plan table:
+    - AGGREGATOR_FEE_PCT = 0.03 — plan says "market-determined, no hardcoded %" but MVP needs a default
+    - TIP_PROTOCOL_FEE_PCT = 0.05 — replaced by founder royalty in Sprint 7b
+    - PROTOCOL_FEE_HALVING_YEARS = 4 — wrong model (time-based), remove in Sprint 7b
+    - PROTOCOL_FEE_SUNSET_YEARS = 20 — wrong model (time-based), remove in Sprint 7b
+    Fix: Add AGGREGATOR_FEE_PCT to plan constants table as MVP default. Remove other 3 in Sprint 7b.
+
+[!] Plan constants missing from code (add during relevant sprint):
+    - BURST_SATS_PER_GB = 2000                → Sprint 7b (PricingV1 fix)
+    - MIN_BOUNTY_SATS_DEFAULT = 50            → Sprint 7b (PricingV1 fix)
+    - OPEN_MIN_POOL_SATS_DEFAULT = 500        → Sprint 7b (open access)
+    - FREE_PREVIEW_MAX_BYTES = 16384          → Sprint 7b (free preview)
+    - EVENT_MAX_BODY = 16384                  → Sprint 7b (EventV1)
+    - MAX_LIST_ITEMS = 1000                   → Sprint 7b (EventV1 LIST payload)
+    - BASE_FEE = 21-210 sats                  → Sprint 7b (EventV1 ingest)
+    - FOUNDER_ROYALTY_R0/V_STAR/ALPHA         → Sprint 7b (fee model fix)
+    - SNAPSHOT_INTERVAL_EPOCHS = 100          → Sprint 7d.1
+    - ANCHOR_INTERVAL_EPOCHS = 6             → Sprint 7d.1
+    - PREVIEW_THUMB_WIDTH = 200              → Sprint 7e
+    - PREVIEW_TEXT_CHARS = 500               → Sprint 7e
+
+## Schema Gaps (non-blocking, fix during relevant sprint)
+
+[ ] EpochSummary missing receipt_merkle_root    → Sprint 7d.1 (snapshot/compaction)
+[ ] DirectoryV1 missing regions[], refusals_cid, materializers[]  → Sprint 7b
+[ ] No MaterializerV1 / MaterializerPricingV1 schema  → Sprint 7b
+[ ] No EventV1 TypeBox schema (this IS Sprint 7b)
+[ ] Pin cancel: no SLA-triggered fee waiver    → Sprint 7b (needs SLA monitoring)
+[ ] GET /served endpoint missing               → Sprint 7b (low priority)
+[ ] Node-agent doesn't publish min_bounty_sats → Sprint 7b (after PricingV1 fix)
+
+## False Positive in Progress Log
+
+[!] Line 511: "[x] Storage pricing knob — sats_per_gb_month: u64? added to PricingV1"
+    - This is marked [x] (done) but sats_per_gb_month is NOT in the TypeBox schema (host.ts)
+    - Likely added to the plan/spec but never landed in code
+    - Fix: change to [ ] or add the field
+
+
+================================================================================
 PATH A: DEPLOY + CLI (get content flowing)
 ================================================================================
 
@@ -242,8 +328,7 @@ DocRef: MVP_PLAN:§Node Kit, §What Hosts vs What You Host, §Bootstrap Sequence
 [ ] Second domain                       separate registrar/TLD pointing to same or different IP
 [ ] peers.json rolling cache            ~/.dupenet/peers.json updated on every successful interaction
 [ ] Daily Bitcoin anchoring (L7)        1 tx/day, Taproot tweak, epoch_summary + snapshot hash
-[ ] Verify page                         /verify/<ref> → inclusion proof → Bitcoin tx link
-[ ] Crisis readiness                    read-only mode switch, hot-path cache, rate limiting, status page
+    - infrastructure side; UI verify page + crisis readiness in Sprint 7e
 
 Exit: public URL serves real content via L402. External client can `dupenet fetch` from anywhere.
       Client survives founder endpoint outage via retry-with-rotation + cache + .onion fallback.
@@ -288,6 +373,7 @@ Architectural decision (2025-02-08):
 ## Sprint 7b — EventV1 Envelope (packages/physics)
 
 The protocol-level event primitive. Everything in materializer depends on this.
+ALSO: fixes all divergences marked "Sprint 7b" in §DIVERGENCES above.
 
 [ ] EventV1 TypeBox schema             { v: u8, kind: u8, from: bytes32, ref: bytes32, body: bytes, sats: u64, ts: u64, sig }
     - canonical serialization (same pattern as existing schemas)
@@ -300,6 +386,15 @@ The protocol-level event primitive. Everything in materializer depends on this.
 [ ] Kind payload schemas (TypeBox)     AnnouncePayload, HostPayload, ListPayload, PinPayload
     - these are materializer conventions, not protocol — live under physics for convenience
     - unknown kinds: preserve, don't reject (extensibility)
+    - AnnouncePayload.access: "open" | "paid" (default "paid") — publisher intent for open-access serving
+      "open" = full content served without L402 (hosts earn from bounty pool only)
+      materializer renders inline vs behind paywall based on this field
+      see MVP_PLAN:§New User Journey (First Contact), §Open Access Tier
+[ ] PricingV1.open_min_pool_sats       host-configured threshold for open-access serving
+    - pool below threshold → host declines open-access, falls back to L402
+    - prevents free-CDN abuse: open access is sponsored availability, not charity
+    - default: 500 sats (OPEN_MIN_POOL_SATS_DEFAULT in constants)
+    - add to existing PricingV1 schema alongside min_bounty_sats
 [ ] Pool credit rule                   if event.sats > 0: credit pool[event.ref] += sats (minus protocol fee)
     - pool_key = event.ref (bytes32 — can be CID, event_id, topic hash)
     - protocol is key-blind; materializer resolves ref → CID for settlement
@@ -308,8 +403,26 @@ The protocol-level event primitive. Everything in materializer depends on this.
     - backward compat: existing POST /tip, POST /host/register still work (shim to POST /event)
     - new canonical path: POST /event (accepts any kind)
 
+Divergence fixes (bundled into this sprint — see §DIVERGENCES):
+[ ] Replace fee model                  remove TIP_PROTOCOL_FEE_PCT (flat 5%), PROTOCOL_FEE_HALVING_YEARS,
+                                       PROTOCOL_FEE_SUNSET_YEARS. Implement volume-tapering founder royalty:
+                                       r(v) = R0 × (1 + v/V_STAR)^(-ALPHA). Track cumulative_volume in coordinator.
+                                       Add FOUNDER_ROYALTY_R0=0.15, V_STAR=125M, ALPHA=log(2)/log(9) to constants.
+[ ] Pool key → bytes32                 rename Prisma BountyPool.cid → poolKey. Accept CID/event_id/topic_hash.
+[ ] GET /cid/:hash endpoint            gateway: if single block → serve; if asset → 302 to /asset/. Nano-blob path.
+[ ] Free preview tier                  blocks ≤ FREE_PREVIEW_MAX_BYTES (16384) served without L402. Rate-limit per-IP.
+                                       Add FREE_PREVIEW_MAX_BYTES to constants.
+[ ] PricingV1 complete                 add burst_sats_per_gb, min_bounty_sats, sats_per_gb_month, open_min_pool_sats
+                                       to TypeBox schema + Prisma + GET /pricing. Add BURST_SATS_PER_GB=2000,
+                                       MIN_BOUNTY_SATS_DEFAULT=50 to constants.
+[ ] New constants                      EVENT_MAX_BODY=16384, MAX_LIST_ITEMS=1000, BASE_FEE=21-210 (dynamic).
+[ ] Node-agent publishes min_bounty_sats  in PricingV1 during host registration.
+
 Exit: physics exports EventV1. Construct event, sign, verify. Pool rule tested.
       Kind payloads constructable/verifiable. One envelope replaces per-action schemas.
+      Fee model is volume-tapering royalty, not flat 5%. Pool keys accept any bytes32.
+      Gateway serves nano-blobs via GET /cid/:hash. Free preview tier works.
+      PricingV1 has all 6 fields.
 
 ## Sprint 7c — Batch Upload + Content Metadata (apps/cli)
 
@@ -321,7 +434,7 @@ All publishing now goes through POST /event with appropriate kind bytes.
     - progress: file N/M, blocks K/T overall
     - skip already-uploaded blocks (409 Conflict = ok, resume on failure)
     - after upload: POST kind=ANNOUNCE event per file, POST kind=LIST event for collection
-[ ] Upload metadata flags               --title, --description, --tags, --language, --source
+[ ] Upload metadata flags               --title, --description, --tags, --language, --source, --access open|paid
 [ ] Thumbnail generation                generate preview thumbnails client-side (images: 200px JPEG; text: 500 char excerpt)
 [ ] `dupenet fund <ref> <sats>`         unified funding command (replaces `dupenet tip`)
     - POST /event with kind=FUND, sats=amount, ref=pool_key
@@ -367,7 +480,11 @@ All endpoints are materializer conventions — other materializers may offer dif
 [ ] Event-to-blob promotion             funded events above threshold serialized as CIDs → PUT /block
     - materializer policy: threshold configurable (e.g. 1000 sats)
     - promoted events enter normal replication market
-[ ] GET /orphans                        high direct pool, low in-degree — "needs analysis" content
+[ ] GET /orphans                        three-part orphan score: high direct pool + low graph connectivity
+                                       (few inbound ref/body edges from funded events) + low discussion depth
+                                       (few/zero kind=POST replies). "Funded, but under-analyzed." Analyst job board.
+                                       Hard to game: inflating pool costs real sats, reducing connectivity means
+                                       not linking to the node (defeats visibility gaming).
 
 Exit: POST /event accepts all kinds. GET /events returns filtered stream.
       GET /feed/funded ranks by dual score (direct pool + graph importance).
@@ -390,44 +507,100 @@ DocRef: MVP_PLAN:§Event Log Growth + Compaction, §Longevity L7
 
 Exit: GET /bootstrap returns snapshot + recent events. New node materializes in seconds.
 
-## Sprint 7e — Web Content Surface + Threading
+## Sprint 7e — The Leaderboard + Web Surface (the product)
 
-The page that makes content visible, fundable, and debatable. Recipients see content,
-resilience signals, a Fund button, and threaded discussion. This IS the product.
+The global importance scoreboard — content ranked by economic commitment. The product that
+drives adoption, distribution, funding, and institutional revenue. The new user journey
+(MVP_PLAN:§New User Journey) lives or dies here.
+DocRef: MVP_PLAN:§The Leaderboard (Step 8), §New User Journey (First Contact)
+
+### Minimum ship (4 pages)
 
 [ ] Scaffold web app                   apps/web, Next.js, server-renders from materializer APIs
-[ ] Content landing page: /v/<ref>     single asset view (blobs AND events — same UX)
-    - header: title, description (from kind=ANNOUNCE events), kind, mime, size
-    - preview: thumbnail or text excerpt
-    - dual score display: direct pool balance + graph-weighted importance
-    - instrument cluster: replica count, epoch survival, demand trend, sustainability
-    - inbound citations: "referenced by N funded analyses" (body edge in-degree)
-    - comment box: POST kind=POST with ref=content ref (PoW for free; optional sats)
-      universal — identical on blobs, events, collections, comments
-    - Fund button: amount slider → POST /event kind=FUND (one action, all amounts)
-[ ] Collection page: /c/<event_id>     grouped content view (from kind=LIST events)
-    - item list with per-asset signals + aggregate resilience
-    - fan-out strategy selector (size/equal/demand/importance/manual)
-    - Fund button: fan-out across constituents (materializer resolves per strategy)
-[ ] Cluster page: /g/<ref>             graph neighborhood view
-    - all nodes reachable within N hops via ref/body/list edges
-    - ranked by graph importance
-    - "show me everything economically connected to this document"
-[ ] Thread page: /t/<event_id>         threaded discussion view
-    - renders kind=POST event ref chains as tree (comments on comments nested)
-    - per-post: sats committed, unique funders, author age, body edge links
-    - reply box: POST kind=POST with ref=parent_event_id (PoW for free; optional sats to boost)
-[ ] Orphan view: /orphans              high pool / low graph connectivity — "needs analysis"
-[ ] Market quote display               "Add X sats → est. Y copies for Z days" from supply curve
-[ ] Lightning payment (browser)        Fund button → WebLN auto-pay + QR fallback → POST /event
-[ ] Free preview serving               gateway serves thumb CIDs / small blocks without L402
-[ ] Host scorecard page: /h/<pubkey>   host reputation view from scorecard endpoint
 
-Exit: share https://ocdn.is/v/<ref> → content + dual scores + Fund + comment box.
-      /g/<ref> → citation neighborhood. /orphans → undiscussed funded content.
-      /t/<event_id> → monetized threaded discussion with citation links.
-      Comments work identically on documents, comments, collections, attestations.
-      One Lightning payment via one endpoint. One action: fund or comment.
+[ ] / Leaderboard
+    - rows: title, pool sats, copies, Fortify button
+    - top bar: total sats, host count, "live" indicator
+    - SSE: pool balance + rank updates (this IS the activity feed at low volume)
+
+[ ] /v/<ref> Content page
+    - inline render if access="open", else excerpt/thumbnail + L402
+    - 3 stats: pool sats, copies, runway (months at current drain)
+    - Fortify button: amount selector (21/210/2100/custom) + WebLN/QR
+    - thread: list comments (kind=POST with ref=this) + comment box (PoW for free, sats to boost)
+
+[ ] /c/<list> Collection page
+    - list items: title, pool, copies
+    - Fund All button (size-weighted default)
+
+[ ] /p/<ref> Proof page
+    - hash verified badge
+    - Bitcoin anchor txid + date
+    - host endpoints list
+    - download evidence bundle (EvidenceExportV1 JSON)
+
+### Next pass (add after 4 pages prove the loop)
+
+[ ] Topic leaderboards: /topic/<tag>   tag filter on leaderboard, not separate page
+[ ] Cluster page: /g/<ref>             graph neighborhood (needs enough edges to be useful)
+[ ] Thread page: /t/<event_id>         separate thread view (threads already render on /v/<ref>)
+[ ] Thread bundle page: /b/<bundle_cid> archived conversation snapshot
+[ ] Orphan filter                      "sort by: needs analysis" on leaderboard (not separate page)
+[ ] Host scorecard: /h/<pubkey>        operator-facing, add when there are operators
+[ ] Embeddable widget                  distribution mechanism, add after loop is proven
+[ ] Velocity indicators, collection sort/filter, inbound/outbound citation counts
+[ ] Fund Thread button                 fan-out over ref-chain (cheap to add, but comment+Fortify first)
+[ ] Market quote tooltip               "+X sats → est. +Y replicas" on Fortify button
+
+### Client interaction model (MVP_PLAN:§Client Interaction Model)
+
+[ ] Browser keypair lifecycle           generate Ed25519 on first write → indexedDB (encrypted) + localStorage (pk)
+    - identity chip UI: pubkey short, export/import, NIP-07 detect, reset
+    - "no key" mode: read-only browsing, write prompts key creation (1 tap)
+    - NIP-07 upgrade: if window.nostr present, prefer it for signing
+[ ] Event construction in browser       physics library must work in browser (already uses @noble/hashes — OK)
+    - EventV1 compose → sign → POST /event (same pipeline for comment/fund/announce/list)
+[ ] Event PoW (Web Worker)             free writes: PoW in Web Worker, never block UI, "publishing..." spinner
+    - challenge = SHA256("EV1_POW" || from || ts || kind || ref || SHA256(body))
+    - find nonce where H(challenge || nonce) < EVENT_POW_TARGET (~200ms mobile)
+    - distinct from receipt PoW (different prefix, different purpose)
+[ ] Payment-intent binding              POST /payreq { sats, event_hash } → invoice with event_hash in memo
+    - materializer rejects events whose hash doesn't match paid invoice
+[ ] Upload shim (MVP)                  POST /upload (multipart) → materializer chunks → returns asset_root
+    - metadata events (ANNOUNCE/LIST) always signed client-side
+    - returns identical objects to client-side chunking (drop-in swap later)
+[ ] SSE endpoints                      GET /sse/global (leaderboard), GET /sse/ref/<ref> (per-content)
+    - message types: fund_delta, new_event, replica_change, rank_shift
+    - optimistic UI insert on submit, reconcile on SSE echo
+[ ] Pending event queue                indexedDB: signed events stored offline, replay on reconnection, dedup by event_id
+    - connects to §Longevity L2 (client-side event buffer)
+
+### Fortify payment flow (MVP_PLAN:§New User Journey — zero-to-sats)
+
+[ ] WebLN auto-pay (tier 1)            Fortify → amount selector (21/210/2100/custom) → WebLN pays → done
+[ ] QR/invoice fallback (tier 2)       no WebLN → QR code + invoice string → scan in wallet app
+[ ] Wallet guide (tier 3)              no wallet → one-screen guide (Phoenix/Alby). Accept bounce-and-return.
+[ ] Fortify abandonment tracking        measure clicks → completions per tier. Fiat bridge trigger: >60% abandon.
+
+### Bitcoin integrity anchor (L7 — pulled into MVP)
+
+[ ] Daily Bitcoin tx                   Taproot tweak: SHA256(epoch_summary_merkle_root || state_snapshot_hash)
+    - batched: 1 tx/day covering 6 epochs. ~$0.50/day.
+[ ] Verify page: /verify/<ref>         paste CID or event_id → inclusion proof path → Bitcoin tx link
+    - "integrity radiator" — institutions won't touch without it
+
+### Crisis readiness (before first spike)
+
+[ ] Read-only mode                     one switch: disable writes, keep serving reads
+[ ] Hot-path cache                     top 100 leaderboard items cached, invalidated on new events
+[ ] Rate limiting                      materializer API per-IP (L402 surge pricing at volume)
+[ ] Status page                        public uptime/health endpoint + incident comms template
+[ ] Graceful degradation               widget and API serve cached data if coordinator overloaded
+
+Exit: 4 pages ship. / shows leaderboard with live SSE updates. /v/<ref> shows content (open-access
+      inline, paid behind L402), 3 stats, Fortify (WebLN+QR), comment box. /c/<list> shows collection
+      with Fund All. /p/<ref> shows proof with Bitcoin anchor + evidence download.
+      New user journey core loop works: arrive → read → fund → comment → prove.
 
 
 ================================================================================
@@ -508,7 +681,7 @@ External review fixes (solved — applied to mvp_plan.md):
     - post-MVP: on-chain UTXO, federation, or DLC-based escrow
 [x] Free preview rate limiting           per-IP token bucket (60 burst / 10 sustained); CDN for founder hosts (#6)
     - hosts can disable free tier; MUST rate-limit if enabled
-[x] Storage pricing knob                 sats_per_gb_month: u64? added to PricingV1 (#8)
+[~] Storage pricing knob                 sats_per_gb_month: u64? — added to plan but NOT in TypeBox schema (host.ts). Fix in Sprint 7b PricingV1 complete.
     - enables durability estimation: (bounty - egress_drain) / (storage_cost * size_gb) = months
 [x] Pin SLA semantics                    best effort + full refund if min_copies unmet 6 epochs (#10)
     - no PIN_CANCEL_FEE on SLA-triggered cancel; regions relaxable via signed amendment
