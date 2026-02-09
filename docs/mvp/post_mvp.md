@@ -812,6 +812,8 @@ As multiple aggregators emerge, aggregation becomes a race condition:
 - Cryptographic location proofs (P2+)
 - Hardware attestation (P2+)
 - Memory-hard PoW (Argon2id) if ASIC farming emerges
+- Payment rail diversity: ecash/Cashu pool credits, on-chain settlement fallback, Fedimint, custom token (P2+). Trigger: LN routing disruption or regulatory chokepoint on LN on-ramps. No protocol change — `sats > 0` is the invariant, rail is plumbing.
+- Event stream live mirroring: SSE/WebSocket subscription from coordinator for independent real-time replicas (P1+). Reduces snapshot recovery gap. Prerequisite: at least one independent party replaying events before first crisis content seeded.
 
 ---
 

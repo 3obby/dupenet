@@ -465,7 +465,7 @@ Step-function durability emerges from host economics, not protocol rules.
 
 **Principle**: No governance, no global moderation. Operators and clients each apply local policy. Slash only for fraud, never for refusal.
 
-**Operator policy**: Operators publish `RefusalV1 { operator, target, reason, scope, sig }` — machine-readable declaration of what they won't serve. Reasons: ILLEGAL | MALWARE | DOXXING | PERSONAL | COST | OTHER. Attester-driven quarantine: follow trusted attesters, auto-deny matching claims. Encrypted blobs are opaque — policy applies over hashes + attestations, not content inspection. Node kit UX: toggle presets + attester follow lists + manual deny + import/export JSON.
+**Operator policy**: Operators publish `RefusalV1 { operator, target, reason, scope, sig }` — machine-readable declaration of what they won't serve. Reasons: ILLEGAL | MALWARE | DOXXING | PERSONAL | COST | OTHER. Attester-driven quarantine: follow trusted attesters, auto-deny matching claims. Encrypted blobs are opaque — policy applies over hashes + attestations, not content inspection. Node kit UX: toggle presets + attester follow lists + manual deny + import/export JSON. **Default attester list ships empty.** Operators explicitly opt into attester sets. No auto-subscribe. A non-empty default would create a centralized content policy surface weaponizable via coordinated ATTEST flooding (see §Post-MVP Assessment Queue #14).
 
 **Client safety**: Mirrors operator model, applied locally. Pre-fetch: MIME-type gate (warn on executables), publisher signals, CID denylist. Post-fetch: SHA256 verify, magic bytes vs MIME, known-good list check. `ClientPolicyV1` is importable/exportable (same format as operator policy). No server-side scanning, no global blocklist, no sandboxing — warn and inform, never block by default.
 
@@ -1224,10 +1224,20 @@ Core surface:
 - Market quote display: "Add X sats → est. Y copies for Z days" from supply curve
 
 Embeddable widget:
-- Compact leaderboard widget (iframe/JS snippet) for external sites
+- Compact leaderboard widget for external sites
 - Shows: content title, funding counter, funder count, Fortify button
 - Widget served by materializer (free for small sites; L402-gated for commercial embeds at volume)
 - Primary distribution mechanism: every embed on a news site drives funding back to the platform
+
+Widget resilience (content-addressed distribution):
+- Widget JS+CSS bundle published as a CID on the blob layer. Same replication market as any content — has its own bounty pool, hosts earn from serving it, community can fund the widget CID as infrastructure.
+- Embed snippet is inline (~1KB bootstrap), not an external `<script src>`. News sites paste a self-contained snippet that carries its own resolution logic. No single domain in the critical path.
+- Bootstrap resolution: try hardcoded host list (5+ endpoints across jurisdictions) → first response with matching content hash wins → cache in localStorage. Hardcoded list is the lifeboat; loaded widget maintains the ship.
+- Widget self-updates host list: once loaded, fetches current directory, stores latest endpoints in localStorage. Next page load, bootstrap tries fresh localStorage hosts first, falls back to hardcoded stale list. Host list stays current without news sites updating embed code.
+- Widget self-updates code: loaded widget checks for newer version CID via signed announcement event from publisher pubkey. Version-pinned CID in snippet is stable baseline; updates are transparent and signature-verified.
+- Two-step resolution: (1) load widget code = blob fetch from any host (survives materializer loss), (2) widget fetches live data from materializer (degrades gracefully — cached counters, "live data unavailable" state, stale-but-visible).
+- Dog-food property: the widget is itself protocol content. "This widget can't be taken down because 23 hosts serve it" is both a technical fact and the pitch.
+- Seizure math: external `<script src>` = seize 1 domain, kill all embeds. Inline bootstrap with 5 hosts + localStorage = must seize all hosts simultaneously AND wait for cache expiry across every browser. Suppression cost scales with host count × cache lifetime.
 
 Payment integration:
 - WebLN auto-pay for Fortify button (zero-click for wallet users)
@@ -1500,6 +1510,7 @@ Clients discover hosts and materializers from multiple independent sources. Foun
 - Hardcode bootstrap list in client binary (founder endpoints + known community hosts)
 - Ship `.onion` address in compose-production.yml from day 1
 - Second domain on separate registrar/TLD
+- Client-side event buffer: queue EventV1 locally if all materializer endpoints unreachable; replay on reconnection (FIFO, dedup by event_id). Prevents event loss during coordinator disruption — pool re-ignition needs the events, not just the balances.
 
 **Post-MVP (after EventV1 stable):**
 - Nostr event publishing: map HOST/MATERIALIZER events to NIP-compatible kinds
@@ -1548,6 +1559,8 @@ Serves as trust anchor for state snapshots (§Event Log Growth). New nodes verif
 
 > If founder is permanently removed at midnight: do receipts still mint (L1), hosts still discoverable (L2), portal still reachable (L3), state still computable (L4), epochs still settle (L5), code still buildable (L6), accounting still auditable (L7)? Can a new node bootstrap from a verified snapshot without the founder's coordinator (L7 + §Event Log Growth)? Every "no" is a failure.
 
+> Re-ignition test: coordinator dies with non-zero pool balances. New coordinator bootstraps from snapshot. Hosts discover funded CIDs from snapshot state. Within one epoch: hosts serving, receipts minting, pools draining. Clients replay buffered events (L2). Every stall is a bug. The pool IS the recovery mechanism — funded content re-attracts hosts automatically once any coordinator is live.
+
 R&D tracks (FROST threshold mints, on-chain bounty accounting, erasure coding, proof-of-storage, payment rail diversity) documented separately.
 
 ---
@@ -1566,6 +1579,9 @@ Deferred design decisions from external review. Each has a trigger condition —
 | 11 | Client safety (beyond denylist) | CID denylist + MIME gate + magic byte check (§Client Safety Layer) | First malware incident in production | Attester pack distribution model. Encrypted blob opacity to attesters. |
 | 12+A | Materializer market + paid event ingest | Founder is sole materializer; MaterializerV1 schema + MaterializerPricingV1 defined; DirectoryV1 includes `materializers[]`; coordinator rate-limits for free | Second materializer operator expresses interest | Key insight: materializers are metadata hosts — same L402, same market. Ingest = PUT /block equivalent; queries = GET /block equivalent. Interface defined (§MaterializerV1). Remaining: relay-vs-materializer separation at scale, consistency model for divergent state, economic tuning (ingest fee vs query fee balance). |
 | 13 | ~~Thread/collection bundles~~ **PULLED INTO MVP (Step 8)** | ThreadBundleV1 defined (§Thread Bundles). Thread fan-out + Fund Thread button + thread bundle page in Step 8 deliverables. | — | Thread bundles pulled forward. ThreadBundleV1: content-addressed snapshot of thread state (events + merkle root). Fundable/pinnable as one CID. Self-verifying completeness via ref-chain DAG. Collection bundles (non-thread) remain deferred until request overhead dominates. |
+| 14 | Attester weaponization (coordinated ATTEST flooding) | Default node kit ships with empty attester follow list; operators explicitly opt in; no auto-subscribe | First observed coordinated attester campaign targeting specific CIDs | Adversary publishes ATTEST events (claim=ILLEGAL) from official-looking pubkeys → hosts with default attester lists auto-refuse. Defense: defaults empty, attester reputation (cost-weighted history, temporal burst detection), attester bond option. Social/operational risk, not protocol. |
+| 15 | Payment rail diversity (LN-only dependency) | Single rail (Lightning). Accepted risk at MVP. | First LN routing disruption affecting receipt flow or pool credits | Ecash/Cashu bearer tokens for pool credits. On-chain fallback for large settlements. Fedimint integration. Custom token (long-term). No protocol change — pool credit is `sats > 0`, rail is plumbing. |
+| 16 | Event stream live mirroring | Snapshots every 100 epochs (~17 days); gap = unverified state | Second materializer or independent archiver active | SSE/WebSocket event stream from coordinator. Independent parties maintain real-time replicas. Reduces recovery gap from 17 days to minutes. Prerequisite for credible re-ignition. |
 | B | Founder service replacement specs | Longevity section L1-L7 | Pre-launch documentation pass | For each service (directory, mints, aggregator, snapshots, provisioning, materializer): inputs, outputs, swap procedure. Test: "can a stranger replace it without contacting the founder?" |
 
 ---
