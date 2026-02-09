@@ -236,8 +236,18 @@ DocRef: MVP_PLAN:§Node Kit, §What Hosts vs What You Host, §Bootstrap Sequence
 [ ] Shareable URLs                      https://ocdn.is/asset/<root> returns content
 [ ] Monitoring                          uptime check, LND balance alerts, disk usage
 [ ] Backup cron                         schedule scripts/backup.sh every 6h
+[ ] Multi-endpoint client config        CLI + node-agent: endpoints[] array, retry-with-rotation
+[ ] Hardcoded bootstrap list            founder endpoints built into CLI binary
+[ ] .onion address                      Tor hidden service in compose-production.yml
+[ ] Second domain                       separate registrar/TLD pointing to same or different IP
+[ ] peers.json rolling cache            ~/.dupenet/peers.json updated on every successful interaction
+[ ] Daily Bitcoin anchoring (L7)        1 tx/day, Taproot tweak, epoch_summary + snapshot hash
+[ ] Verify page                         /verify/<ref> → inclusion proof → Bitcoin tx link
+[ ] Crisis readiness                    read-only mode switch, hot-path cache, rate limiting, status page
 
 Exit: public URL serves real content via L402. External client can `dupenet fetch` from anywhere.
+      Client survives founder endpoint outage via retry-with-rotation + cache + .onion fallback.
+      Daily Bitcoin anchor makes all protocol state verifiable. Crisis spike degrades gracefully.
 
 ## Sprint 9 — Multi-host (prove the network)
 
