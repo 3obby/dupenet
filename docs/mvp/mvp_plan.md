@@ -165,6 +165,7 @@ Full TypeBox schemas in `packages/physics/src/schemas/`. Key protocol entities:
 - **EventV1**: v, kind, from, ref, body (≤16 KiB), sats, ts, sig. `event_id = SHA256(canonical(minus sig))`. Protocol rule: `sats > 0 → credit pool[ref]`. Everything else is materializer policy.
 - **ReceiptV2**: asset_root?, file_root, block_cid, host_pubkey, payment_hash, response_hash, price_sats, receipt_token (mint-signed bearer proof), epoch, nonce, pow_hash, client_pubkey, client_sig
 - **EpochSummary**: epoch, host, cid, receipt_merkle_root, receipt_count, unique_clients
+- **EvidenceExportV1** (materializer view, not protocol): Self-contained portable proof bundle (<16 KiB). Packages CID, size, MIME, title, publisher pubkey + sig, sources[] (resolved host endpoints), anchors[] (Bitcoin txid + Merkle inclusion proof from L7), attestations[] (AttestationV1 refs), integrity hash. Content-addressed (`SHA256(canonical(...))`). Produced by `dupenet export <ref>` or `GET /evidence/<ref>`. Designed for offline verification, court filings, and institutional handoff — works without protocol access. "Proof URL" resolves to a rendered EvidenceExportV1.
 
 Receipt token: `Sign_mint_sk("R2" || host || epoch || block_cid || response_hash || price || payment_hash)`. Verification is O(1) with mint_pk. MVP: 2-3 independent mints, separate keypairs.
 
@@ -175,7 +176,7 @@ These are `EventV1.body` schemas the reference materializer interprets. Not prot
 | Kind | Name | ref | body | Notes |
 |------|------|-----|------|-------|
 | 0x01 | FUND | pool_key | empty | Tip/upvote/fortify are all FUND with different amounts |
-| 0x02 | ANNOUNCE | CID | title, description, mime, tags, preview, thumb_cid | Human metadata for content |
+| 0x02 | ANNOUNCE | CID | title, description, mime, tags, preview, thumb_cid, access | Human metadata for content. `access`: `"open"` (full content served free, hosts earn from bounty pool only) or `"paid"` (L402 gated, default). Materializer convention — see §New User Journey. |
 | 0x03 | POST | parent_event_id, CID, or topic_hash | inline text ≤16KiB; may contain `[ref:bytes32]` body edges | Comment on any content (blob or event); threading via ref chains; body edges create citation graph; PoW for free, sats to boost |
 | 0x04 | HOST | CID | endpoint, pricing, regions, stake | Host registration + serve announcement |
 | 0x05 | REFUSAL | CID | reason enum + scope | Operator content filtering |
@@ -480,6 +481,8 @@ Hosts set their own prices via `PricingV1`: `min_request_sats` (anti-grief floor
 **Defaults**: min_request 3 sats | normal 500 sats/GB (~$0.05/GB) | burst 2000 sats/GB. Charge = `max(min_request_sats, ceil(rate × gb))`.
 
 **Free preview tier**: Thumbnails/excerpts ≤16 KiB served without L402 (host opts in). Rate-limited per-IP (60 burst / 10 sustained). Free previews are loss leaders that drive paid fetches.
+
+**Open access tier**: Full content served without L402 for CIDs announced with `access: "open"` (materializer convention on ANNOUNCE events, see §New User Journey). Hosts earn from bounty pool epoch rewards (Fortify funding), not egress. Used for seed content / public-interest material where the value prop is durability + context, not exclusive access. Host opt-in: `PricingV1.serve_open_access: bool`. Rate-limited per-IP same as free preview. The conversion event is Fortify, not L402.
 
 **Client behavior**: query cheapest host meeting minimum resilience score, show estimated cost, failover on timeout. Creates competition without governance.
 
@@ -1149,8 +1152,10 @@ Deliverables:
 - Existing POST /tip, POST /host/register, POST /content/announce collapse into: `POST /event`
 - `GET /events?ref=&kind=&from=&since=` — event query endpoint (replaces per-kind endpoints)
 - Batch upload in CLI: `dupenet upload <dir>` → chunk + upload blobs → POST kind=ANNOUNCE events → POST kind=LIST event
-- Upload metadata flags: `--title`, `--description`, `--tags`, `--language`, `--source`
+- Upload metadata flags: `--title`, `--description`, `--tags`, `--language`, `--source`, `--access open|paid`
 - `dupenet fund <ref> <sats>` — unified funding (replaces `dupenet tip`). All funding is `POST /event` with sats > 0.
+- `dupenet export <ref>` → generates EvidenceExportV1 bundle (CID + publisher sig + host endpoints + L7 anchor proof + attestations). Offline-verifiable. Outputs JSON + optional "Proof URL" short link.
+- `dupenet verify <ref-or-file>` → offline verification of EvidenceExportV1 bundle OR live verification of CID (fetch + hash check + anchor proof). Exit 0 = valid.
 - `min_bounty_sats` field on HostPayload (host publishes profitability threshold)
 
 Dependencies: Phase 1 steps 1-3 (needs blob layer + host registration for end-to-end)
@@ -1220,6 +1225,7 @@ Core surface:
 - Thread page: `/t/<event_id>` — threaded discussion view, per-post sats visible. Comments on comments rendered as nested tree. Fund Thread button prominent. Thread bundle snapshot action: "Preserve this conversation" → creates ThreadBundleV1 → single CID, fundable/pinnable as one object.
 - Thread bundle page: `/b/<bundle_cid>` — archived conversation snapshot with completeness proof (merkle root verifiable). Shows all events in thread at snapshot time, per-event funding, bundle-level funding counter.
 - Orphan view: `/orphans` — content with high direct pool but low graph connectivity. "Needs analysis" — incentivizes first analysts.
+- Proof page: `/p/<ref>` — "Proof URL." Renders EvidenceExportV1 for any CID or event_id. Shows: content preview, "Existed since: <date>" with Bitcoin anchor proof, bytes-verified badge (hash match), provenance chain (publisher sig, witnesses, attestations), fetch endpoints, download evidence bundle (offline-verifiable JSON). Top-level nav item alongside leaderboard. The institutional conversion surface — paste a Proof URL in a court filing, email, or tweet. Reconstructable from bundle CID if domain dies.
 - Host scorecard: `/h/<pubkey>` — host reputation dashboard
 - Market quote display: "Add X sats → est. Y copies for Z days" from supply curve
 
@@ -1265,7 +1271,7 @@ Crisis readiness (before first spike):
 
 Dependencies: steps 6-7 (needs EventV1 + signal endpoints)
 
-Exit: share `https://ocdn.is/v/<ref>` → recipient sees funded content with Fortify button, Fund Thread button, live funding counter, and comment box. Click Fortify → counter updates in seconds. Comment → thread appears as nano-blob (comment CID fetchable via `GET /cid/{event_id}`), body edges create citation links. Fund Thread → all comments in thread receive funding proportionally, sustainability meters update. "Preserve this conversation" → ThreadBundleV1 snapshot created, single CID fundable/pinnable. `/` shows the global leaderboard with dual scoring (direct pool + graph importance). `/t/<event_id>` shows threaded discussion with per-post funding. `/b/<bundle_cid>` shows archived conversation snapshot with completeness proof. `/g/<ref>` shows the citation neighborhood. `/orphans` surfaces undiscussed funded content. `/verify/<ref>` shows inclusion proof anchored to Bitcoin. News sites embed the widget. If a spike hits, the system degrades gracefully, not catastrophically.
+Exit: share `https://ocdn.is/v/<ref>` → recipient sees funded content with Fortify button, Fund Thread button, live funding counter, and comment box. Open-access content (seed/public-interest, `access: "open"`) renders full document inline — no L402 wall. Click Fortify → three-tier flow (WebLN → QR → wallet guide) → counter updates in seconds. Comment → thread appears as nano-blob (comment CID fetchable via `GET /cid/{event_id}`), body edges rendered as clickable citation links. Fund Thread → all comments in thread receive funding proportionally, sustainability meters update. "Preserve this conversation" → ThreadBundleV1 snapshot created, single CID fundable/pinnable. `/` shows the global leaderboard with dual scoring (direct pool + graph importance), live activity feed (SSE), header network stats, velocity indicators per item. `/t/<event_id>` shows threaded discussion with per-post funding. `/b/<bundle_cid>` shows archived conversation snapshot with completeness proof. `/g/<ref>` shows the citation neighborhood. `/orphans` surfaces undiscussed funded content with "needs analysis" callouts. `/verify/<ref>` shows inclusion proof anchored to Bitcoin. News sites embed the widget. If a spike hits, the system degrades gracefully, not catastrophically. The new user journey (§New User Journey) is satisfied end-to-end: arrive → read → explore → fortify → comment → return.
 
 ---
 
@@ -1384,7 +1390,139 @@ Not "decentralized storage." Not "censorship-resistant platform." Not "Web3 medi
 
 **"Content that can't be killed, priced by the people who care."**
 
+For institutions/legal/compliance: **"Proof URLs — verifiable evidence links with Bitcoin-anchored timestamps."** Same system, different entry point. Consumer sees the leaderboard; lawyer sees the Proof URL.
+
 The protocol is invisible. The content is visible. The instrument cluster (sats committed, replicas, epoch survival) is the proof. Users don't need to understand L402 or harmonic allocation. They need to see a number go up when they tap "Fortify."
+
+### New User Journey (First Contact)
+
+The protocol lives or dies in the first 90 seconds of a new visitor's experience. The scenario that matters: someone on Twitter/Nostr shares an ocdn.is link during a censorship spike. A wave of normies who have never heard of Lightning click through. Every design decision below serves that moment.
+
+**The arrival**
+
+User lands on `/v/<ref>` — a specific Epstein deposition. They see:
+
+1. The document (readable — full content, not a gated preview)
+2. The instrument cluster beside/below it:
+   - Funding counter: "4,718 sats committed by 93 people"
+   - Replica map: pins on Iceland, Romania, Malaysia, Switzerland — "served by 7 independent hosts across 4 jurisdictions"
+   - Sustainability meter: "funded for 14 more months at current drain rate"
+   - Citation inbound: "referenced by 12 funded analyses"
+3. The Fortify button (prominent, single action)
+4. Discussion thread (comments weighted by sats, citation links between documents)
+5. Activity pulse: "someone funded this +210 sats 3 minutes ago"
+
+The instrument cluster IS the pitch. It answers "why am I here instead of PACER?" without a single word of explanation. PACER doesn't show you that 93 people care enough to pay for this document's survival, or that it's replicated across 4 jurisdictions, or that 12 analysts have published funded commentary linking it to other documents. The content is commodity. The context is the product.
+
+**Open access for seed content**
+
+Seed content — material that's already publicly available and serves as the go-to-market hook (Epstein court filings, FOIA releases, deplatformed archives with creator consent) — MUST be fully readable without L402. The L402 wall at the moment of peak interest kills the viral loop dead.
+
+The economics still work:
+- Hosts earn from bounty pool epoch rewards (funded by Fortify), not egress on seed content
+- Free reading is the loss leader. The conversion event is Fortify, not L402.
+- "Free to read, pay to preserve" is a sentence anyone understands. "Pay 3 sats to read what you can get for free on PACER" is not.
+- Host opt-in: `PricingV1.open_access_cids[]` or a flag on ANNOUNCE events. Hosts who serve open-access content earn from bounty pools only, no egress. This is a host-level policy decision, not protocol.
+
+Open access is NOT "all content is free." It's a specific category for seed/public-interest content where the value prop is durability and context, not exclusive access. Creator-uploaded paid content (clips, data, files) keeps its L402 gate — that's Flywheel A (marketplace). Open access is Flywheel B (attention → funding → replication).
+
+Implementation: ANNOUNCE event includes `access: "open" | "paid"` field (materializer convention, not protocol). Default: `paid`. Founder sets `open` on seed content. Hosts choose whether to honor it (free serving = no egress revenue, but access to bounty pool from Fortify funding). The materializer renders content inline vs behind paywall based on this field.
+
+**The Fortify conversion (zero-to-sats)**
+
+The normie who just arrived from Twitter sees the instrument cluster, gets it, wants to Fortify. They don't have Lightning.
+
+The Fortify flow must handle three tiers of user:
+
+1. **Lightning-native** (WebLN wallet installed): Click Fortify → amount selector (21 / 210 / 2100 sats, custom) → WebLN auto-pays → counter increments in <5 seconds. Zero friction.
+
+2. **Has a Lightning wallet but no WebLN**: Click Fortify → amount selector → QR code / invoice string → scan/paste in wallet app → counter increments on payment confirmation. 10-second flow.
+
+3. **No Lightning wallet (the critical case)**: Click Fortify → amount selector → "Pay with Lightning" (QR/invoice) OR "Get started" → recommended wallet guide (2-3 options: Phoenix for mobile, Alby for browser, Mutiny for web-only). Keep it to one screen. Don't build a custodial onramp — link to the best self-custodial wallets with clear "install → fund → return here" steps. Accept that this user may bounce and return later. The instrument cluster already did the persuasion work; the wallet setup is homework they'll do because they're motivated.
+
+Fiat onramp (post-MVP, assess when Fortify abandonment rate measurable): embedded Strike/Coinos widget for card-to-Lightning. Not at launch — adds regulatory surface and custodial dependency. But track how many users click Fortify and then don't complete payment. If >60% abandon, the fiat bridge becomes urgent.
+
+**Small network, alive feeling**
+
+At 5-10 nodes and 20 items on the leaderboard, the network needs to feel like a living system, not a static page.
+
+Live activity feed: a real-time stream on the leaderboard page showing funding events as they happen. "Someone funded 'Maxwell Deposition 2019' +500 sats — 2 min ago." SSE/WebSocket from materializer, same infrastructure as the 60-second feedback loop (§Real-time feedback). Even one funding event per hour keeps the page alive. At low volume, batch the feed with system events: "New host online in Romania", "Replica count for <title> increased to 6", "New analysis published on <title>."
+
+Content count and network stats in the header: "47 documents | 4,718 sats committed | 7 hosts across 4 jurisdictions." Small numbers that are real are more powerful than large numbers that feel fake. The header stats grow visibly week over week — returning visitors see momentum.
+
+Leaderboard velocity indicators: alongside each item's rank, show direction arrows or streak indicators ("+3 positions", "trending", "new"). At low volume, even a few Fortify events produce visible rank movement. The leaderboard should feel like a scoreboard, not a library catalog.
+
+**The explorer journey (browsing the Epstein collection)**
+
+The user who arrived on a single document now wants to explore. The collection page (`/c/<list_event_id>`) is the navigation hub:
+
+- All 200+ documents organized with titles, sizes, per-document funding levels
+- Sortable: by funding, by recency, by document date, by citation count
+- Filter by type (depositions, flight logs, correspondence, court orders)
+- Each document shows its mini instrument cluster (funding, replicas, citation count)
+- Collection-level aggregate: total sats, total replicas, estimated sustainability of the collection
+- "Fund All" button with strategy selector (equal, size-weighted, demand-weighted)
+
+The cluster view (`/g/<ref>`) is the power feature that no other platform offers. "Show me everything economically connected to this deposition." The user clicks through from a document and sees its citation neighborhood: which analyses reference it, which other documents those analyses also cite, which documents are heavily funded but have no analysis yet (orphans).
+
+Orphan callouts: prominent banner on documents with high funding but low graph connectivity. "This $2,000 bounty document has no analysis yet. Be the first." This creates a gold-rush dynamic for journalists, researchers, and commentators — the funded but undiscussed documents are both the highest-value contribution opportunity and the most obvious gap. Early analysts earn permanent positional advantage in the citation graph (their comments become the only bridge nodes).
+
+**The commenter journey**
+
+User reads a document, wants to say something. Comment box at the bottom of every content page.
+
+- Free comment: PoW proof (200ms on mobile, invisible to user). Zero sats required. Appears in thread.
+- Boosted comment: attach sats to make the comment more visible + fund its own durability. "This comment is backed by 210 sats" shown alongside it. Boosted comments rank higher in the thread. The sats go to the comment's own bounty pool (it's a nano-blob, independently fundable).
+- Citing other documents: type `[ref:...]` inline to create body edges. "The deposition at [ref:a1b2...] contradicts the flight log at [ref:d4e5...]" — creates citation links visible in the graph. The materializer auto-links these in the rendered comment. This is the mechanism by which the citation graph grows organically through discussion.
+
+The comment IS content from birth. It has its own CID, its own bounty pool, its own potential place on the leaderboard if funded enough. A brilliant analysis of an Epstein document can itself climb the leaderboard, attracting more funding, more citations, more replies. The best comments become primary sources in their own right.
+
+**The host operator journey (attracted by the buzz)**
+
+Someone sees the Epstein files trending, notices the bounty pools filling, and thinks: "I have a spare VPS — I could earn sats serving these." Their path:
+
+1. See bounty feed on leaderboard: documents with growing pools, drain rate, estimated earnings per host
+2. Click "Run a Host" → node kit page. Docker one-liner, Raspberry Pi instructions, managed provisioning option.
+3. Deploy node. Agent watches bounty feed, auto-mirrors profitable CIDs.
+4. Within one epoch (4h): first receipts, first earnings visible in host dashboard.
+5. Host appears on replica maps across content pages. Operator sees their host on the map.
+
+Market quoting makes the operator's decision transparent: "Adding your host to this CID increases its replica count from 4 to 5. Estimated earnings: ~20 sats/epoch at current drain rate." The host dashboard shows real-time earnings, CIDs served, receipts collected.
+
+The host operator doesn't need to care about Epstein or censorship. They need to see: "this content has money behind it, I can earn by serving it." The economics self-select hosts — same as gas stations don't care what you're driving to.
+
+**First 90 seconds — decision tree**
+
+```
+Visitor lands on /v/<ref> via shared link
+  └─ Sees: readable document + instrument cluster + activity pulse
+     ├─ Reads document, satisfied, leaves (free rider — fine, they saw the cluster)
+     ├─ Reads document, clicks Fortify
+     │  ├─ Has Lightning → pays → counter increments → dopamine → explores more
+     │  └─ No Lightning → sees wallet guide → bookmarks → returns later (or doesn't)
+     ├─ Reads document, clicks citation link → falls into cluster view → rabbit hole
+     ├─ Reads document, writes comment → now has skin in the game (their comment is content)
+     ├─ Clicks to leaderboard → browses collection → sorts by "needs analysis" → finds gold
+     └─ Clicks "Run a Host" → sees economics → deploys node (operator conversion)
+
+Every path except "leaves immediately" deepens engagement.
+Only one path (Fortify) requires Lightning.
+The rest — reading, exploring, commenting, citing — are frictionless.
+```
+
+**What this means for Step 8 (Leaderboard) deliverables**
+
+The new user journey implies specific additions to the Step 8 build:
+
+- **Open access rendering**: content pages must support full inline document rendering (PDF viewer, text display) for `access: "open"` content, not just thumbnails/excerpts. This is the first thing a visitor sees — it must work.
+- **Live activity feed**: SSE-powered global feed on leaderboard page + per-content feed on content pages. Low-volume padding with system events (new hosts, replica count changes).
+- **Fortify onboarding**: three-tier payment flow (WebLN → QR → wallet guide). Track abandonment at each tier.
+- **Orphan callouts**: "needs analysis" banners on high-funding / low-citation documents. Prominently linked from leaderboard.
+- **Header network stats**: document count, total sats, host count, jurisdiction count. Updated in real-time.
+- **Velocity indicators on leaderboard**: rank change arrows, trending badges, "new" labels.
+- **Collection sort/filter**: sortable by funding, date, citations, type. Filter by tags.
+- **Inline citation rendering**: `[ref:...]` tokens in comments rendered as clickable links to referenced content.
+- **ANNOUNCE `access` field**: materializer convention. `"open"` = full content served free; `"paid"` = L402 gated. Default `"paid"`.
 
 ---
 
@@ -1640,6 +1778,7 @@ Cryptographic attestation of content provenance + funding history. Only the cano
 
 - **Revenue profile**: Grows with history depth. A 2026 attestation verified in 2036 has decade-old proof. Monopoly pricing.
 - **Who pays**: Lawyers ($100-$10K per attestation), journalists, compliance departments, human rights organizations.
+- **Delivery format**: EvidenceExportV1 bundle — self-contained, offline-verifiable, court-admissible without protocol access. `GET /evidence/<ref>` (free for basic) or premium attestation with extended provenance chain + witness co-signatures (paid).
 - **Trigger**: Epoch root anchoring (L7) live, at least one external party requests provenance verification.
 
 ---
