@@ -17,24 +17,22 @@ services:
     command: >
       lnd
       --bitcoin.active --bitcoin.signet
-      --bitcoin.node=bitcoind
-      --bitcoind.rpchost=${LND_BITCOIND_HOST:-mempool.space}
-      --bitcoind.rpcuser=${LND_BITCOIND_USER:-x}
-      --bitcoind.rpcpass=${LND_BITCOIND_PASS:-x}
-      --bitcoind.estimatemode=ECONOMICAL
+      --bitcoin.node=neutrino
+      --neutrino.addpeer=x49.seed.signet.bitcoin.sprovoost.nl
+      --neutrino.addpeer=v7ajjeirttkbnt32wpy3c6w3emwnfr3fkla7hpxcfokez3ez253rvid.onion:38333
+      --neutrino.feeurl=https://nodes.lightning.computer/fees/v1/btc-fee-estimates.json
       --rpclisten=0.0.0.0:10009
       --restlisten=0.0.0.0:8080
       --tlsextradomain=lnd
       --tlsextraip=0.0.0.0
       --alias=ocdn-founder
-      --wallet-unlock-password-file=/root/.lnd/wallet_password
     volumes:
       - lnd-data:/root/.lnd
     healthcheck:
       test: ["CMD", "lncli", "--network=signet", "getinfo"]
-      interval: 10s
+      interval: 15s
       timeout: 10s
-      retries: 30
+      retries: 60
     ports:
       - "9735:9735"   # P2P Lightning
 
