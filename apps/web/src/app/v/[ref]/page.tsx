@@ -7,7 +7,6 @@ import {
   shortHex,
   estRunway,
   timeAgo,
-  GATEWAY,
   type ThreadNode,
 } from "@/lib/api";
 import { FortifyButton } from "@/components/FortifyButton";
@@ -117,7 +116,7 @@ export default async function ContentPage({
       {/* Actions */}
       <FortifyButton poolRef={ref} stats={stats} />
       {" \u00b7 "}
-      <a href={`${GATEWAY}/cid/${ref}`} title="download">{"\u2913"}</a>
+      <a href={`/cid/${ref}`} title="download">{"\u2913"}</a>
       {" \u00b7 "}
       <a href={`/p/${ref}`} title="proof">{"\ud83d\udd0d"}</a>
 

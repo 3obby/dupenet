@@ -22,24 +22,24 @@ export default async function Leaderboard() {
       </header>
       <hr />
 
-      <div className="cluster">
-        <span>{items.length}</span>
-        <span>{"\u0e3f"}{fmtSats(totalSats)}</span>
-        <span>{"\ud83d\udcbf"}{activeHosts}</span>
-      </div>
-
-      <hr />
-
       {items.length === 0 ? (
         <p className="t">-</p>
       ) : (
         <table>
           <thead>
             <tr>
+              <th className="r">
+                {"\u0e3f"}
+                <span className="t th-stat"> {fmtSats(totalSats)}</span>
+              </th>
               <th className="r">#</th>
-              <th className="r">{"\u0e3f"}</th>
-              <th className="r">{"\ud83d\udcbf"}</th>
-              <th></th>
+              <th className="r">
+                {"\ud83d\udcbf"}
+                <span className="t th-stat"> {activeHosts}</span>
+              </th>
+              <th>
+                <span className="t th-stat">{items.length} items</span>
+              </th>
               <th></th>
             </tr>
           </thead>
@@ -50,8 +50,8 @@ export default async function Leaderboard() {
                 shortHex(item.pool_key);
               return (
                 <tr key={item.pool_key}>
-                  <td className="r t">{i + 1}</td>
                   <td className="r">{fmtSats(item.balance)}</td>
+                  <td className="r t">{i + 1}</td>
                   <td className="r">{item.host_count}</td>
                   <td className="w">
                     <a href={`/v/${item.pool_key}`}>{title}</a>

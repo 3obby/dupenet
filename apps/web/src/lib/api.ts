@@ -4,9 +4,6 @@
  */
 
 const COORDINATOR = process.env.COORDINATOR_URL ?? "http://localhost:3102";
-const GATEWAY = process.env.GATEWAY_URL ?? "http://localhost:3100";
-
-export { GATEWAY };
 
 // ── Types ──────────────────────────────────────────────────────────
 
