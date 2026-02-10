@@ -21,7 +21,11 @@
     "typecheck": "turbo run typecheck",
     "clean": "turbo run clean"
   },
+  "packageManager": "npm@11.2.0",
   "engines": {
     "node": ">=20.0.0"
+  },
+  "devDependencies": {
+    "turbo": "^2.8.4"
   }
 }

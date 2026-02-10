@@ -22,6 +22,9 @@ vps-creds*.txt
 .DS_Store
 Thumbs.db
 
+# Seed content (generated, not source)
+seed-content/
+
 # Docker
 docker-compose.override.yml
 

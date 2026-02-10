@@ -359,8 +359,20 @@ DocRef: MVP_PLAN:§Node Kit, §What Hosts vs What You Host, §Bootstrap Sequence
 [ ] LND signet funding                  fund via signet faucet, open channel to well-connected node
 [ ] Mint 2 (remote)                     separate VPS in Malaysia (Shinjiru) or Switzerland (COIN.HOST)
 [ ] Mint 3 (remote)                     third jurisdiction — add before public announcement
-[ ] Seed content upload                 founder uploads Tier 1 + Tier 2 content via CLI
-[ ] Shareable URLs                      https://ocdn.is/asset/<root> returns content
+[x] Caddyfile.production routes          added /event, /payreq, /events, /feed/*, /thread/*, /cid/* routes
+[x] Seed content upload                 9 ANNOUNCE + 8 FUND + 3 POST + 1 LIST = 21 events live
+    - manifesto.txt (1.7K, TEXT, open)   → d020ba0f..477f  ฿1785
+    - protocol-spec.json (1.9K, JSON)    → b59fb39d..64d2  ฿851
+    - architecture.html (3.3K, HTML)     → 9bc46489..f1da  ฿426
+    - economics.csv (767B, CSV)          → 8ed92b82..5df2  ฿179
+    - ocdn-logo.png (1K, IMAGE)          → 38cf54a5..b25f  ฿86
+    - epoch-simulation.csv (1.4M, 6 blocks) → 6880624b..f0ee  ฿4251
+    - collection: README.md + host-guide.txt + threat-model.txt → LIST a25d6c7b..a940
+    - 3 threaded comments on manifesto, architecture, epoch-sim
+[x] Shareable URLs                      https://ocdn.is/asset/<root> returns content
+    - round-trip verified: upload → fetch → diff = identical
+    - multi-block chunking verified (6 blocks, 256 KiB each)
+    - free preview works (blocks ≤16 KiB); L402 gate works (blocks >16 KiB)
 [ ] Monitoring                          uptime check, LND balance alerts, disk usage
 [ ] Backup cron                         schedule scripts/backup.sh every 6h
 [ ] Multi-endpoint client config        CLI + node-agent: endpoints[] array, retry-with-rotation

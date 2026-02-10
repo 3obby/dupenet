@@ -1,13 +1,13 @@
 {
-  "/_not-found/page": "app/_not-found/page.js",
   "/api/evidence/[ref]/route": "app/api/evidence/[ref]/route.js",
   "/api/payreq/[hash]/route": "app/api/payreq/[hash]/route.js",
+  "/_not-found/page": "app/_not-found/page.js",
   "/api/event/route": "app/api/event/route.js",
   "/api/widget/[ref]/route": "app/api/widget/[ref]/route.js",
   "/api/widget/route": "app/api/widget/route.js",
   "/api/payreq/route": "app/api/payreq/route.js",
-  "/c/[ref]/page": "app/c/[ref]/page.js",
   "/page": "app/page.js",
+  "/p/[ref]/page": "app/p/[ref]/page.js",
   "/v/[ref]/page": "app/v/[ref]/page.js",
-  "/p/[ref]/page": "app/p/[ref]/page.js"
+  "/c/[ref]/page": "app/c/[ref]/page.js"
 }

@@ -18,11 +18,32 @@ ocdn.is {
   handle /served {
     reverse_proxy gateway:3100
   }
+  handle /cid/* {
+    reverse_proxy gateway:3100
+  }
   handle /spot-check/* {
     reverse_proxy gateway:3100
   }
 
   # ── Coordinator (protocol state) ────────────────────────────
+  handle /event {
+    reverse_proxy coordinator:3102
+  }
+  handle /payreq {
+    reverse_proxy coordinator:3102
+  }
+  handle /payreq/* {
+    reverse_proxy coordinator:3102
+  }
+  handle /events {
+    reverse_proxy coordinator:3102
+  }
+  handle /feed/* {
+    reverse_proxy coordinator:3102
+  }
+  handle /thread/* {
+    reverse_proxy coordinator:3102
+  }
   handle /tip {
     reverse_proxy coordinator:3102
   }
