@@ -56,6 +56,11 @@ export default async function ProofPage({
       <CopyButton text={`/p/${ref}`} label="url" />
       {" \u00b7 "}
       <a href={`/api/evidence/${ref}`} download>{"\u2913"}json</a>
+      {" \u00b7 "}
+      <CopyButton
+        text={`<iframe src="/api/widget/${ref}" width="320" height="100" style="border:1px solid #ccc;border-radius:4px" loading="lazy"></iframe>`}
+        label="embed"
+      />
 
       <hr />
 

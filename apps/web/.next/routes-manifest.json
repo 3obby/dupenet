@@ -36,6 +36,14 @@
       "namedRegex": "^/api/payreq/(?<nxtPhash>[^/]+?)(?:/)?$"
     },
     {
+      "page": "/api/widget/[ref]",
+      "regex": "^/api/widget/([^/]+?)(?:/)?$",
+      "routeKeys": {
+        "nxtPref": "nxtPref"
+      },
+      "namedRegex": "^/api/widget/(?<nxtPref>[^/]+?)(?:/)?$"
+    },
+    {
       "page": "/c/[ref]",
       "regex": "^/c/([^/]+?)(?:/)?$",
       "routeKeys": {

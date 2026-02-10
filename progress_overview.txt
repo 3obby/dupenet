@@ -643,7 +643,13 @@ DocRef: MVP_PLAN:§The Leaderboard (Step 8), §New User Journey (First Contact)
 [ ] Thread bundle page: /b/<bundle_cid> archived conversation snapshot
 [ ] Orphan filter                      "sort by: needs analysis" on leaderboard (not separate page)
 [ ] Host scorecard: /h/<pubkey>        operator-facing, add when there are operators
-[ ] Embeddable widget                  distribution mechanism, add after loop is proven
+[x] Embeddable widget                  self-contained HTML iframe, no JS dependencies
+    - GET /api/widget → mini leaderboard (top N, configurable ?n=5)
+    - GET /api/widget/:ref → content card (title, ฿ balance, 𓀠 funders, 💿 copies, ◷ runway, +฿ link)
+    - inline CSS, 30s cache, all links open main site in _blank
+    - embed code: <iframe src="/api/widget/:ref" width="320" height="100">
+    - "embed" copy button on proof page (/p/<ref>)
+    - (deferred: inline bootstrap snippet, multi-host resolution, self-updating widget CID)
 [ ] Velocity indicators, collection sort/filter, inbound/outbound citation counts
 [ ] Fund Thread button                 fan-out over ref-chain (cheap to add, but comment+Fortify first)
 [ ] Market quote tooltip               "+฿ X → est. +Y replicas" on Fortify button

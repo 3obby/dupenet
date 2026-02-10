@@ -1,11 +1,13 @@
 {
-  "/api/evidence/[ref]/route": "/api/evidence/[ref]",
   "/_not-found/page": "/_not-found",
-  "/api/payreq/route": "/api/payreq",
+  "/api/evidence/[ref]/route": "/api/evidence/[ref]",
   "/api/payreq/[hash]/route": "/api/payreq/[hash]",
   "/api/event/route": "/api/event",
-  "/p/[ref]/page": "/p/[ref]",
-  "/v/[ref]/page": "/v/[ref]",
+  "/api/widget/[ref]/route": "/api/widget/[ref]",
+  "/api/widget/route": "/api/widget",
+  "/api/payreq/route": "/api/payreq",
+  "/c/[ref]/page": "/c/[ref]",
   "/page": "/",
-  "/c/[ref]/page": "/c/[ref]"
+  "/v/[ref]/page": "/v/[ref]",
+  "/p/[ref]/page": "/p/[ref]"
 }
