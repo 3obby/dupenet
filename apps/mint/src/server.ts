@@ -61,14 +61,29 @@ export async function buildApp(deps?: MintDeps) {
   app.post("/sign", async (req, reply) => {
     if (!signer) return reply.status(503).send({ error: "no_key" });
 
-    const body = req.body as {
-      host_pubkey: string;
-      epoch: number;
-      block_cid: string;
-      response_hash: string;
-      price_sats: number;
-      payment_hash: string;
-    };
+    const body = req.body as Record<string, unknown>;
+
+    // Input validation — this is the HSM component, reject garbage early
+    const host_pubkey = body.host_pubkey;
+    const epoch = body.epoch;
+    const block_cid = body.block_cid;
+    const response_hash = body.response_hash;
+    const price_sats = body.price_sats;
+    const payment_hash = body.payment_hash;
+
+    const hex64 = /^[0-9a-f]{64}$/;
+    if (typeof host_pubkey !== "string" || !hex64.test(host_pubkey))
+      return reply.status(400).send({ error: "invalid_field", field: "host_pubkey" });
+    if (typeof epoch !== "number" || !Number.isInteger(epoch) || epoch < 0)
+      return reply.status(400).send({ error: "invalid_field", field: "epoch" });
+    if (typeof block_cid !== "string" || !hex64.test(block_cid))
+      return reply.status(400).send({ error: "invalid_field", field: "block_cid" });
+    if (typeof response_hash !== "string" || !hex64.test(response_hash))
+      return reply.status(400).send({ error: "invalid_field", field: "response_hash" });
+    if (typeof price_sats !== "number" || !Number.isInteger(price_sats) || price_sats < 0)
+      return reply.status(400).send({ error: "invalid_field", field: "price_sats" });
+    if (typeof payment_hash !== "string" || !hex64.test(payment_hash))
+      return reply.status(400).send({ error: "invalid_field", field: "payment_hash" });
 
     // Verify settlement against LND (when configured)
     if (lndClient) {
@@ -96,7 +111,14 @@ export async function buildApp(deps?: MintDeps) {
       }
     }
 
-    const { token, mint_pubkey } = await signer.signToken(body);
+    const { token, mint_pubkey } = await signer.signToken({
+      host_pubkey: host_pubkey as string,
+      epoch: epoch as number,
+      block_cid: block_cid as string,
+      response_hash: response_hash as string,
+      price_sats: price_sats as number,
+      payment_hash: payment_hash as string,
+    });
 
     const tokenB64 = Buffer.from(token).toString("base64");
     return reply.send({ token: tokenB64, mint_pubkey });

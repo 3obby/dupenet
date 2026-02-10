@@ -20,7 +20,6 @@ export interface BlockRouteContext {
   invoiceStore: InvoiceStore;
   hostPubkey: string;
   minRequestSats: number;
-  satsPerGb: number;
 }
 
 export function blockRoutes(app: FastifyInstance, ctx: BlockRouteContext): void {

@@ -92,13 +92,12 @@ export async function updateAvailability(
   let newStatus = host.status;
 
   // Status transitions based on score
-  if (score >= 0.6 && host.status === "PENDING") {
+  // DocRef: MVP_PLAN:§Protocol Enforcement — Lifecycle
+  if (score >= 0.6 && (host.status === "PENDING" || host.status === "DEGRADED" || host.status === "INACTIVE")) {
     newStatus = "TRUSTED";
-  } else if (score >= 0.6 && host.status === "DEGRADED") {
-    newStatus = "TRUSTED";
-  } else if (score < 0.6 && host.status === "TRUSTED") {
+  } else if (score < 0.6 && score > 0 && host.status === "TRUSTED") {
     newStatus = "DEGRADED";
-  } else if (score === 0 && host.status !== "UNBONDING") {
+  } else if (score === 0 && host.status !== "UNBONDING" && host.status !== "SLASHED") {
     newStatus = "INACTIVE";
   }
 

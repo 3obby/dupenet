@@ -1,24 +1,36 @@
 /**
  * Bounty pool — Prisma-backed.
- * DocRef: MVP_PLAN:§Bounty Pool Mechanics
+ * DocRef: MVP_PLAN:§Bounty Pool Mechanics, §Founder Royalty
  *
- * Materialized from tip events. Replayable from event log.
+ * Materialized from tip/fund events. Replayable from event log.
+ * Founder royalty is volume-tapering: r(v) = 0.15 × (1 + v/125M)^(-0.3155)
  */
 
 import type { PrismaClient } from "@prisma/client";
-import { TIP_PROTOCOL_FEE_PCT } from "@dupenet/physics";
+import { computeRoyalty } from "@dupenet/physics";
 
 /**
- * Credit a tip to a bounty pool.
- * Protocol fee is deducted; remainder goes to pool.
+ * Get cumulative volume (total sats ever credited across all pools).
+ * Used as input to the founder royalty formula.
+ */
+export async function getCumulativeVolume(prisma: PrismaClient): Promise<number> {
+  const result = await prisma.bountyPool.aggregate({
+    _sum: { totalTipped: true },
+  });
+  return Number(result._sum.totalTipped ?? 0n);
+}
+
+/**
+ * Credit a tip/fund to a bounty pool.
+ * Founder royalty (volume-tapering) is deducted; remainder goes to pool.
  */
 export async function creditTip(
   prisma: PrismaClient,
   cid: string,
   amount: number,
 ): Promise<{ poolCredit: number; protocolFee: number }> {
-  const protocolFee = Math.floor(amount * TIP_PROTOCOL_FEE_PCT);
-  const poolCredit = amount - protocolFee;
+  const cumulativeVolume = await getCumulativeVolume(prisma);
+  const { royalty, poolCredit } = computeRoyalty(amount, cumulativeVolume);
 
   await prisma.bountyPool.upsert({
     where: { cid },
@@ -33,7 +45,7 @@ export async function creditTip(
     },
   });
 
-  return { poolCredit, protocolFee };
+  return { poolCredit, protocolFee: royalty };
 }
 
 /**

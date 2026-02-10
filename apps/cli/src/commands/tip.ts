@@ -13,7 +13,7 @@ import { httpPost } from "../lib/http.js";
 interface TipResponse {
   ok: boolean;
   pool_credit: number;
-  protocol_fee: number;
+  protocol_fee: number; // founder royalty (volume-tapering)
 }
 
 export async function tipCommand(
@@ -54,7 +54,7 @@ export async function tipCommand(
   });
 
   console.log();
-  console.log(`  pool_credit:  ${result.pool_credit} sats`);
-  console.log(`  protocol_fee: ${result.protocol_fee} sats`);
+  console.log(`  pool_credit:     ${result.pool_credit} sats`);
+  console.log(`  founder_royalty: ${result.protocol_fee} sats`);
   console.log(`  ok: ${result.ok}`);
 }

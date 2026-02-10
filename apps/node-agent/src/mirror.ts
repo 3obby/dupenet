@@ -61,8 +61,35 @@ export async function findProfitableTargets(
 }
 
 /**
- * Mirror a specific block CID from a source gateway to our local gateway.
- * Fetches the block bytes from source, pushes to local.
+ * Mirror a single block from source to local gateway.
+ */
+async function mirrorBlock(
+  blockCid: string,
+  sourceGatewayUrl: string,
+  fetchFn: typeof fetch,
+): Promise<boolean> {
+  try {
+    const res = await fetchFn(`${sourceGatewayUrl}/block/${blockCid}`);
+    if (!res.ok) return false;
+
+    const bytes = new Uint8Array(await res.arrayBuffer());
+
+    const putRes = await fetchFn(`${config.gatewayUrl}/block/${blockCid}`, {
+      method: "PUT",
+      body: bytes,
+      headers: { "content-type": "application/octet-stream" },
+    });
+
+    return putRes.ok;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Mirror a CID from a source gateway to our local gateway.
+ * Resolves AssetRoot → FileManifest → blocks for multi-block assets.
+ * Falls back to single-block mirror if no asset/manifest found.
  */
 export async function mirrorCid(
   cid: string,
@@ -70,20 +97,71 @@ export async function mirrorCid(
   fetchFn: typeof fetch = fetch,
 ): Promise<boolean> {
   try {
-    // Fetch block from source
-    const res = await fetchFn(`${sourceGatewayUrl}/block/${cid}`);
-    if (!res.ok) return false;
+    // Try as asset first (multi-block)
+    const assetRes = await fetchFn(`${sourceGatewayUrl}/asset/${cid}`);
+    if (assetRes.ok) {
+      const assetBody = await assetRes.text();
+      const asset = JSON.parse(assetBody) as {
+        original: { file_root: string };
+        variants?: Array<{ file_root: string }>;
+      };
 
-    const bytes = new Uint8Array(await res.arrayBuffer());
+      // Mirror original file (manifest + blocks)
+      const origOk = await mirrorFile(asset.original.file_root, sourceGatewayUrl, fetchFn);
+      if (!origOk) return false;
 
-    // Push to our local gateway
-    const putRes = await fetchFn(`${config.gatewayUrl}/block/${cid}`, {
+      // Mirror variant files (if any)
+      for (const variant of asset.variants ?? []) {
+        await mirrorFile(variant.file_root, sourceGatewayUrl, fetchFn);
+      }
+
+      // Push asset root to local gateway
+      const putAsset = await fetchFn(`${config.gatewayUrl}/asset/${cid}`, {
+        method: "PUT",
+        body: assetBody,
+        headers: { "content-type": "application/json" },
+      });
+
+      return putAsset.ok;
+    }
+
+    // Fallback: try as single block
+    return await mirrorBlock(cid, sourceGatewayUrl, fetchFn);
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Mirror a file (manifest + all blocks) from source to local.
+ */
+async function mirrorFile(
+  fileRoot: string,
+  sourceGatewayUrl: string,
+  fetchFn: typeof fetch,
+): Promise<boolean> {
+  try {
+    const manifestRes = await fetchFn(`${sourceGatewayUrl}/file/${fileRoot}`);
+    if (!manifestRes.ok) return false;
+
+    const manifestBody = await manifestRes.text();
+    const manifest = JSON.parse(manifestBody) as { blocks: string[] };
+
+    // Mirror all blocks
+    let allOk = true;
+    for (const blockCid of manifest.blocks) {
+      const ok = await mirrorBlock(blockCid, sourceGatewayUrl, fetchFn);
+      if (!ok) allOk = false;
+    }
+
+    // Push manifest to local gateway
+    const putManifest = await fetchFn(`${config.gatewayUrl}/file/${fileRoot}`, {
       method: "PUT",
-      body: bytes,
-      headers: { "content-type": "application/octet-stream" },
+      body: manifestBody,
+      headers: { "content-type": "application/json" },
     });
 
-    return putRes.ok;
+    return putManifest.ok && allOk;
   } catch {
     return false;
   }

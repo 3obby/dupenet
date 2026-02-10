@@ -35,6 +35,11 @@ function createMockPrisma() {
 
   return {
     bountyPool: {
+      aggregate: async () => {
+        let total = 0n;
+        for (const p of pools.values()) total += p.totalTipped;
+        return { _sum: { totalTipped: total } };
+      },
       upsert: async ({ where, create, update }: {
         where: { cid: string };
         create: Record<string, unknown>;

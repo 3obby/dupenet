@@ -40,6 +40,11 @@ function createMockFetch(
       return new Response(null, { status: 404 });
     }
 
+    // GET /asset/:root (source gateway — asset resolution for multi-block mirror)
+    if (urlStr.includes("/asset/") && (!init || init.method === "GET" || !init.method)) {
+      return new Response(null, { status: 404 }); // default: no asset, fall back to single block
+    }
+
     // PUT /block/:cid (local gateway — store mirrored block)
     if (init?.method === "PUT" && urlStr.includes("/block/")) {
       return new Response(JSON.stringify({ ok: true }), { status: 201 });
@@ -121,11 +126,12 @@ describe("mirrorCid", () => {
     const ok = await mirrorCid(CID_1, "http://source:3100", mockFetch);
     expect(ok).toBe(true);
 
-    // Verify fetch was called: GET from source, PUT to local
-    expect(mockFetch).toHaveBeenCalledTimes(2);
+    // Verify fetch: try asset (404) → GET block from source → PUT block to local
+    expect(mockFetch).toHaveBeenCalledTimes(3);
     const calls = mockFetch.mock.calls;
-    expect(calls[0]![0]).toContain(`source:3100/block/${CID_1}`);
-    expect(calls[1]![0]).toContain(`localhost:3100/block/${CID_1}`);
+    expect(calls[0]![0]).toContain(`source:3100/asset/${CID_1}`);
+    expect(calls[1]![0]).toContain(`source:3100/block/${CID_1}`);
+    expect(calls[2]![0]).toContain(`localhost:3100/block/${CID_1}`);
   });
 
   it("returns false when source block not found", async () => {

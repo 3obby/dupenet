@@ -326,21 +326,10 @@ describe("runAllChecks + updateAllScores", () => {
     const prisma = createMockPrisma(store);
     await runAllChecks(prisma as never, fetcher);
 
-    // 0/5 checks passed → score 0.0 → INACTIVE (or DEGRADED depending on transition logic)
+    // 0/5 checks passed → score 0.0 → INACTIVE
     expect(store.hosts.get(HOST_A)!.availabilityScore).toBe(0);
-    // With score == 0 and previous status TRUSTED → goes to DEGRADED or INACTIVE
-    // updateAvailability: score < 0.6 && status === "TRUSTED" → DEGRADED
-    // BUT then score === 0 && status !== "UNBONDING" → INACTIVE
-    // The code checks: score < 0.6 first (→ DEGRADED), then score === 0 (→ INACTIVE)
-    // Since both conditions are checked, the final status depends on order
-    // In updateAvailability: it's if/else-if, so score < 0.6 → DEGRADED wins
-    // Then score === 0 check only triggers if status !== "UNBONDING" but the previous check already set DEGRADED
-    // Actually let me re-read the code...
-    // The status transitions are: if score >= 0.6 && PENDING → TRUSTED, elif score >= 0.6 && DEGRADED → TRUSTED,
-    // elif score < 0.6 && TRUSTED → DEGRADED, elif score === 0 && not UNBONDING → INACTIVE
-    // For TRUSTED with score 0: score < 0.6 → DEGRADED (third branch)
-    // The score === 0 branch only triggers if not already matched
-    expect(store.hosts.get(HOST_A)!.status).toBe("DEGRADED");
+    // score === 0 → INACTIVE directly (score < 0.6 && score > 0 → DEGRADED, but score=0 hits INACTIVE branch)
+    expect(store.hosts.get(HOST_A)!.status).toBe("INACTIVE");
   });
 
   it("recovering host transitions DEGRADED → TRUSTED", async () => {

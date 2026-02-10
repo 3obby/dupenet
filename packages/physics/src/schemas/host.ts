@@ -22,6 +22,10 @@ export const PricingV1 = Type.Object(
   {
     min_request_sats: Type.Integer({ minimum: 1 }),
     sats_per_gb: Type.Integer({ minimum: 1 }),
+    burst_sats_per_gb: Type.Optional(Type.Integer({ minimum: 1 })),
+    min_bounty_sats: Type.Optional(Type.Integer({ minimum: 0 })),
+    sats_per_gb_month: Type.Optional(Type.Integer({ minimum: 0 })),
+    open_min_pool_sats: Type.Optional(Type.Integer({ minimum: 0 })),
   },
   { additionalProperties: false },
 );

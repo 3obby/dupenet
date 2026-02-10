@@ -76,6 +76,13 @@ export {
   verifyEventSignature,
 } from "./event-signature.js";
 
+// Founder royalty (volume-tapering protocol fee)
+export {
+  founderRoyaltyRate,
+  computeRoyalty,
+  cumulativeFounderIncome,
+} from "./royalty.js";
+
 // Block selection (anti-special-casing PRF)
 export {
   selectBlockIndex,

@@ -85,6 +85,10 @@ export async function buildApp(deps?: GatewayDeps) {
 
   const invoiceStore = new InvoiceStore();
 
+  // Periodic cleanup of expired invoices (every 60s)
+  const cleanupInterval = setInterval(() => invoiceStore.cleanup(), 60_000);
+  app.addHook("onClose", () => clearInterval(cleanupInterval));
+
   const blockCtx: BlockRouteContext = {
     store,
     lndClient,
@@ -92,7 +96,6 @@ export async function buildApp(deps?: GatewayDeps) {
     invoiceStore,
     hostPubkey: config.hostPubkey,
     minRequestSats: config.minRequestSats,
-    satsPerGb: config.satsPerGb,
   };
 
   // Register routes
