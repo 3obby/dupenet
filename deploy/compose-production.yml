@@ -25,6 +25,7 @@ services:
       --tlsextradomain=lnd
       --tlsextraip=0.0.0.0
       --alias=ocdn-founder
+      --wallet-unlock-password-file=/root/.lnd/wallet_password
     volumes:
       - lnd-data:/root/.lnd
     healthcheck:
