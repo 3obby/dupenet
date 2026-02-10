@@ -10,15 +10,13 @@ import {
   type FileManifestV1,
 } from "@dupenet/physics";
 import type { BlockStore } from "../storage/block-store.js";
+import type { MetadataStore } from "../storage/metadata-store.js";
 
-/** In-memory manifest store. TODO: move to coordinator/DB in Sprint 3. */
-const manifests = new Map<CID, FileManifestV1>();
-
-export function getManifest(root: CID): FileManifestV1 | undefined {
-  return manifests.get(root);
-}
-
-export function fileRoutes(app: FastifyInstance, store: BlockStore): void {
+export function fileRoutes(
+  app: FastifyInstance,
+  store: BlockStore,
+  meta: MetadataStore,
+): void {
   /**
    * PUT /file/:root — store a file manifest.
    * Verifies: file_root = SHA256(canonical(manifest))
@@ -61,7 +59,7 @@ export function fileRoutes(app: FastifyInstance, store: BlockStore): void {
         }
       }
 
-      manifests.set(root as CID, manifest);
+      await meta.putManifest(root as CID, manifest);
       return reply.status(201).send({ ok: true, file_root: root });
     },
   );
@@ -78,7 +76,7 @@ export function fileRoutes(app: FastifyInstance, store: BlockStore): void {
         return reply.status(400).send({ error: "invalid_root" });
       }
 
-      const manifest = manifests.get(root as CID);
+      const manifest = meta.getManifest(root as CID);
       if (!manifest) {
         return reply.status(404).send({ error: "not_found" });
       }

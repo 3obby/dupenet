@@ -176,7 +176,7 @@ These are `EventV1.body` schemas the reference materializer interprets. Not prot
 | Kind | Name | ref | body | Notes |
 |------|------|-----|------|-------|
 | 0x01 | FUND | pool_key | empty | Tip/upvote/fortify are all FUND with different amounts |
-| 0x02 | ANNOUNCE | CID | title, description, mime, tags, preview, thumb_cid, access | Human metadata for content. `access`: `"open"` (full content served free, hosts earn from bounty pool only) or `"paid"` (L402 gated, default). Materializer convention — see §New User Journey. |
+| 0x02 | ANNOUNCE | CID | title, description, mime, tags, preview, thumb_cid, access | Human metadata for content. `access`: `"open"` or `"paid"` (default). Publisher *signal*, not host *constraint* — publisher says "I'd like this free"; hosts MAY honor it if pool meets their `open_min_pool_sats` threshold, or not. Protocol doesn't enforce. Either way, hosts earn from both earning streams (bounty + vending) simultaneously. Materializer convention — see §Dual-Mode Host Economics, §New User Journey. |
 | 0x03 | POST | parent_event_id, CID, or topic_hash | inline text ≤16KiB; may contain `[ref:bytes32]` body edges | Comment on any content (blob or event); threading via ref chains; body edges create citation graph; PoW for free, sats to boost |
 | 0x04 | HOST | CID | endpoint, pricing, regions, stake | Host registration + serve announcement |
 | 0x05 | REFUSAL | CID | reason enum + scope | Operator content filtering |
@@ -200,11 +200,11 @@ These are `EventV1.body` schemas the reference materializer interprets. Not prot
 
 - **Client**: POST events (with sats > 0 to fund), fetch blobs (L402), mint receipts
 - **Protocol**: Credit pools from events, drain pools from receipts, settle epochs
-- **Operator**: Serve blobs, earn egress + pool payouts
+- **Operator**: Serve blobs, earn from two streams: bounty (epoch rewards from pool drain) + vending (L402 egress fees). Both always available per CID.
 
 Flow: Client posts event with sats → Protocol credits pool → Host serves bytes → Receipt proves service → Protocol pays host
 
-Casual readers pay L402 only (hosts earn egress). Receipt minting serves bounty drainage, not individual fetches. Harmonic allocation, threading, and author rewards are materializer policy (see `post_mvp.md`).
+Hosts earn from both streams simultaneously. L402-paying consumers generate receipts (vending). Open-access consumers also generate receipts (bounty-funded). Settlement doesn't distinguish — all receipts count toward epoch eligibility. Harmonic allocation, threading, and author rewards are materializer policy (see `post_mvp.md`).
 
 ### Interface: Client → Protocol
 
@@ -301,6 +301,14 @@ block_cid = SHA256(enc_block)
 
 Keys shared via paid inbox / WoT.
 
+### Gateway Persistence
+
+Gateway currently stores file manifests and asset roots in in-memory Maps (`apps/gateway/src/routes/file.ts`, `apps/gateway/src/routes/asset.ts`). Content survives restarts at the block level (blocks are on disk) but manifests are lost — uploaded multi-block content becomes unretrievable until re-uploaded.
+
+This is a prerequisite for the storefront rendering model (§Materializer Content Rendering): the web app proxies reads from the gateway server-side, which requires `GET /asset/<ref>` and `GET /file/<root>` to return data after gateway restarts.
+
+Fix: persist manifests and asset roots to the same filesystem layout as blocks (`{base}/{h[0:2]}/{h[2:4]}/{hash}.manifest.json` or similar), or to a lightweight SQLite/JSON store. The data is small (manifests are <1 KiB typically) and write-once (content-addressed = immutable). Implementation is straightforward; the bug is purely that it wasn't done yet.
+
 ---
 
 ## Durability Ladder
@@ -383,7 +391,11 @@ I(V) = (r_0 × v_*) / (1-α) × [(1 + V/v_*)^(1-α) - 1]
 
 ```
 Creators: Host their own content, earn like any host (first-mover advantage)
-Hosts: epoch_reward + egress (host-configurable pricing)
+              Self-upload → vending stream (L402 sales). If others Fortify → bounty stream too.
+Hosts:    Two earning streams, always both available:
+              Bounty stream: epoch_reward from pool drain (receipt-based)
+              Vending stream: L402 egress fees (host-configurable PricingV1)
+              A host serving a CID earns from BOTH simultaneously.
 Settlement fee: market-determined by epoch settler (no hardcoded %)
 Mint fee: market-determined by receipt mints (no hardcoded %)
 ```
@@ -482,13 +494,27 @@ Hosts set their own prices via `PricingV1`: `min_request_sats` (anti-grief floor
 
 **Free preview tier**: Thumbnails/excerpts ≤16 KiB served without L402 (host opts in). Rate-limited per-IP (60 burst / 10 sustained). Free previews are loss leaders that drive paid fetches.
 
-**Open access tier (sponsored availability)**: Content served without L402 for CIDs announced with `access: "open"` (materializer convention on ANNOUNCE events, see §New User Journey). Used for seed content / public-interest material where the value prop is durability + context, not exclusive access. Open access is not free forever — it is bounty-funded serving with host thresholds.
+### Dual-Mode Host Economics
 
-Host economics: no egress revenue on open-access fetches; hosts earn exclusively from bounty pool epoch rewards (Fortify funding). Hosts serve open content only if the pool meets their threshold: `PricingV1.open_min_pool_sats` (host-configured minimum pool balance to serve open-tier). Below threshold, host declines or falls back to L402. This creates a natural floor: content drops from open to paid when funding dries up. No charity, no free CDN — sponsored availability.
+The `access` field on ANNOUNCE events is publisher *intent*, not host *constraint*. Publisher says "I'd like this free" — hosts MAY honor it if the pool meets their threshold. Or not. The protocol doesn't care. Hosts are sovereign — they set their own `PricingV1` and there is no enforcement mechanism. A host with "open" content can charge L402 anyway. Rather than pretending otherwise, the plan formalizes both earning streams as always-available.
+
+**Two earning streams, always both available:**
+
+- **Bounty stream** — epoch rewards from pool drain. Hosts earn by proving service (receipts + spot-checks). Funded by Fortify. Pool drains to receipt-holders per `cidEpochCap()`.
+- **Vending stream** — L402 egress fees. Hosts earn per-fetch from consumers. Self-priced via `PricingV1`.
+- A host serving a given CID can earn from BOTH simultaneously. A bounty-funded open-access fetch still generates a receipt that counts toward epoch settlement. Whether the consumer paid L402 (vending) or consumed open-access (bounty-funded), the host produces a receipt. Settlement doesn't distinguish. This means open-access fetches ARE demand signals — they generate receipts that attract more hosts.
+
+**Open access tier (sponsored availability)**: Content served without L402 for CIDs where the pool meets the host's threshold. Used for seed content / public-interest material where the value prop is durability + context, not exclusive access. Open access is not free forever — it is bounty-funded serving with host thresholds. `access: "open"` on ANNOUNCE is a materializer convention (see §New User Journey) that signals publisher preference.
+
+Host economics: on open-access fetches, hosts earn from the bounty stream (epoch rewards from pool drain). Hosts ALSO produce receipts on open-access fetches — identical to paid fetches — which count toward epoch settlement eligibility. This means a host serving popular open content accumulates receipts that prove demand, attracting the same epoch rewards as paid-fetch receipts. Hosts serve open content only if `pool >= host.open_min_pool_sats` (host-configured). Below threshold, host declines or falls back to L402. This creates a natural floor: content drops from open to paid when funding dries up. No charity, no free CDN — sponsored availability.
+
+**Host self-upload (vending-first):** A host uploads content to itself, announces with `access: "paid"`, sets pricing via `PricingV1`. No bounty pool needed — they earn from direct L402 sales (vending stream). If others Fortify the content later, the host earns bounty rewards too. The two flywheels compose without conflict. This is the creator/seller flow: upload → share link → earn per fetch. Discovery is external (social media, direct links). The protocol is the settlement layer.
 
 Size constraint: for large files (video, archives), open access serves derived variants only (thumbnails, excerpts, per-page PDF renders, text extracts). Full raw file stays L402-gated unless pool is large enough to justify the bandwidth. For small/medium documents (court filings, text), open access serves the full file. The threshold is host-decided via `open_min_pool_sats` — a host serving video has higher costs and sets a higher threshold.
 
-UI: open-access content pages show "Sponsored by pool — your sats buy replicas, not access." Rate-limited per-IP same as free preview. The conversion event is Fortify, not L402.
+**Receipt economics are identical across streams.** Whether the consumer paid L402 or consumed open-access content, the host produces a receipt. Settlement doesn't distinguish. The pool drains to receipt-holders regardless of how the consumer accessed the content. This means open-access fetches drive the same host economics as paid fetches: more reads → more receipts → more hosts mirror → faster downloads → more reads.
+
+UI: open-access content pages show "Free to read, pay to preserve." Paid content pages show price tag + Buy button (cheapest host). Rate-limited per-IP same as free preview. The conversion event for open content is Fortify, not L402. For paid content, both L402 (buy) and Fortify (fund durability) are visible.
 
 **Client behavior**: query cheapest host meeting minimum resilience score, show estimated cost, failover on timeout. Creates competition without governance.
 
@@ -506,7 +532,7 @@ EPOCH_LENGTH = 4h
 
 Shorter epochs = faster host payouts, better cash flow for small operators. 6 payout cycles/day.
 
-Host earns for a CID in an epoch if it has sufficient paid receipts:
+Host earns for a CID in an epoch if it has sufficient receipts (paid L402 or open-access — settlement doesn't distinguish):
 
 ```
 PAYOUT_ELIGIBLE(host, cid, epoch) if:
@@ -1176,9 +1202,9 @@ Deliverables:
 - Materializer indexes events by kind, ref, from. Prisma models for materialized views.
 - `GET /events?ref=&kind=` — raw event query
 - `GET /feed/recent` — browsable feed of recent ANNOUNCE events (paginated, filterable by tags)
-- `GET /feed/funded` — CIDs ranked by pool balance (replaces bounty feed)
+- `GET /feed/funded` — CIDs ranked by pool balance (replaces bounty feed). Enriched with `demand` field: receipt_count per epoch as proxy for real traffic. Open-access fetches generate receipts too (§Dual-Mode Host Economics), so demand reflects actual readership, not just paid fetches. Node-agents use demand + balance for mirror targeting. UI shows demand alongside funding.
 - `GET /host/:pubkey/scorecard` — automatic host reputation (from HOST events + spot-checks + receipts)
-- `GET /content/:ref/signals` — content resilience (from FUND events + receipts + HOST events)
+- `GET /content/:ref/signals` — content resilience (from FUND events + receipts + HOST events). Includes demand (fetches/epoch from receipt count) alongside pool balance and graph importance.
 - `GET /author/:pubkey/profile` — pseudonymous reputation (from events by pubkey + receipts on their content)
 - `GET /market/quote` — supply curve from host min_bounty_sats thresholds
 - Collection fan-out: materializer resolves LIST events, distributes FUND across constituents
@@ -1206,26 +1232,30 @@ Exit: new node calls GET /bootstrap, materializes state from snapshot + recent e
 
 ---
 
-**8. The Leaderboard (primary product surface)**
+**8. The Leaderboard + Storefront (primary product surface)**
 
-This is the global importance scoreboard — content ranked by economic commitment. The product that drives adoption, distribution, funding, and institutional revenue. Ship this before polish.
+The web app is a storefront, not a directory. It shows you the content (or a preview of it), surrounded by context (funding, replicas, discussion). Some content is free to read (sponsored by funders). Some costs sats (priced by hosts). The Fortify button works on both — it buys durability, not access. This is the global importance scoreboard — content ranked by economic commitment. The product that drives adoption, distribution, funding, and institutional revenue. Ship this before polish.
 
 Deliverables:
 
 Core surface:
 - Global leaderboard: `/` — all content ranked by dual score: direct pool (economic commitment) and graph importance (citation centrality). Both columns visible. Real-time. The front page of the importance index.
 - Topic leaderboards: `/topic/<tag>` — filtered by topic tag. Ranked the same way.
-- Content page: `/v/<ref>` — single asset view with full instrument cluster:
-  - Content preview (thumbnail/excerpt, free tier)
-  - Dual score display: direct pool balance + graph-weighted importance (divergence visible)
-  - Funding scoreboard: total sats, unique funders, funding trajectory chart
-  - Replica map: hosts serving this content, by country/ASN
-  - Sustainability meter: estimated months of survival at current drain rate
-  - Thread: discussion (kind=POST events with ref=this CID or event_id), weighted by sats committed per post
-  - Comment box: POST kind=POST with ref=content ref (PoW for free; optional sats to boost). Universal — identical UX on blobs, events, collections, and other comments. Comments are nano-blobs from birth — same fetch path, same economics as any content.
-  - Body edge display: inbound citations ("referenced by N funded analyses") and outbound citations ("references N other documents")
-  - Fortify button: Lightning payment → POST /event (one click, one action)
-  - Fund Thread button: Lightning payment → thread fan-out (resolve ref-chain → distribute FUND events across all events in thread). Strategy selector (equal/recency/importance/depth/manual). Shows per-event allocation before confirming. One click preserves an entire conversation.
+- Content page: `/v/<ref>` — **the product page / storefront view.** Renders content inline, not behind a download link:
+  - **Storefront rendering model** (see §Materializer Content Rendering below):
+    - **Open content** (pool ≥ host threshold): full render, fetched server-side from gateway. "Free to read, pay to preserve."
+    - **Paid content** (no open host or below threshold): render free preview (≤16 KiB: excerpt, thumbnail, first page). Show price tag + Buy button (L402 flow). Multiple hosts → show cheapest.
+    - Inline render by MIME: text/HTML rendered directly; images displayed inline; PDFs rendered page-by-page; audio/video with player controls. Download link becomes secondary ("raw" link for power users).
+  - **Always visible regardless of access mode:**
+    - Instrument cluster: total sats, unique funders, demand (fetches/epoch), copies, sustainability meter, access mode
+    - Dual score display: direct pool balance + graph-weighted importance (divergence visible)
+    - Replica map: hosts serving this content, by country/ASN
+    - Thread: discussion (kind=POST events with ref=this CID or event_id), weighted by sats committed per post
+    - Comment box: POST kind=POST with ref=content ref (PoW for free; optional sats to boost). Universal — identical UX on blobs, events, collections, and other comments. Comments are nano-blobs from birth — same fetch path, same economics as any content.
+    - Body edge display: inbound citations ("referenced by N funded analyses") and outbound citations ("references N other documents")
+    - Fortify button: Lightning payment → POST /event (one click, one action)
+    - Fund Thread button: Lightning payment → thread fan-out (resolve ref-chain → distribute FUND events across all events in thread). Strategy selector (equal/recency/importance/depth/manual). Shows per-event allocation before confirming. One click preserves an entire conversation.
+  - The context is the product even when the content is gated. The instrument cluster, discussion, Fortify button, and proof links are always visible — they're what differentiates `/v/<ref>` from a raw download.
 - Collection page: `/c/<list_event_id>` — grouped content with per-asset signals + aggregate resilience. Fan-out strategy selector (size/equal/demand/importance/manual).
 - Cluster page: `/g/<ref>` — graph neighborhood: all nodes reachable within N hops via ref/body/list edges, ranked by graph importance. The information neighborhood view. "Show me everything economically connected to this document."
 - Thread page: `/t/<event_id>` — threaded discussion view, per-post sats visible. Comments on comments rendered as nested tree. Fund Thread button prominent. Thread bundle snapshot action: "Preserve this conversation" → creates ThreadBundleV1 → single CID, fundable/pinnable as one object.
@@ -1275,9 +1305,24 @@ Crisis readiness (before first spike):
 - Status page: public uptime/health endpoint + incident comms template
 - Graceful degradation: widget and API serve cached data if coordinator is overloaded
 
+Materializer content rendering (the storefront — see §Dual-Mode Host Economics):
+- The web app is itself a materializer storefront — it proxies reads from the gateway, displays content with context, and converts attention into funding (Fortify) or purchases (L402 Buy).
+- `/v/<ref>` renders content inline, not behind a download link. The download link becomes secondary ("raw" link for power users).
+- **Open content** (pool ≥ host `open_min_pool_sats` threshold): full render, fetched server-side from gateway. Text/HTML rendered directly; images displayed inline; PDFs page-by-page. "Free to read, pay to preserve."
+- **Paid content** (no open host or below threshold): render free preview from ≤16 KiB free-tier bytes (excerpt for text, thumbnail for images, first page for PDFs). Show price tag + Buy button (L402 flow, reuse existing WebLN/invoice flow from FortifyButton). Multiple hosts → resolve cheapest via `GET /directory` → show lowest price.
+- **Always show** on every content page: instrument cluster, Fortify button, discussion thread, proof link. The context is the product even when the content is gated.
+- Server-side content fetch: web app calls gateway `GET /asset/<ref>` → resolves manifest → fetches blocks → reassembles → renders. For open content, no L402 needed (pool covers it). For paid content preview, free-tier bytes ≤16 KiB are served without L402.
+- Prerequisite: gateway must persist asset/file manifests to disk (current in-memory Map loses state on restart — see §Gateway Persistence).
+
+Directory pricing display:
+- `GET /directory` already returns `PricingV1` per host per CID.
+- Materializer resolves "cheapest host serving this CID" for the Buy button price.
+- UI display: "Served by 3 hosts · from ₿3/fetch" (paid) or "Open access · funded for ~8mo" (open).
+- Per-host pricing visible on proof page (`/p/<ref>`): host endpoint, pricing, availability score.
+
 Dependencies: steps 6-7 (needs EventV1 + signal endpoints)
 
-Exit: share `https://ocdn.is/v/<ref>` → recipient sees funded content with Fortify button, Fund Thread button, live funding counter, and comment box. Open-access content (seed/public-interest, `access: "open"`) renders full document inline — no L402 wall. Click Fortify → three-tier flow (WebLN → QR → wallet guide) → counter updates in seconds. Comment → thread appears as nano-blob (comment CID fetchable via `GET /cid/{event_id}`), body edges rendered as clickable citation links. Fund Thread → all comments in thread receive funding proportionally, sustainability meters update. "Preserve this conversation" → ThreadBundleV1 snapshot created, single CID fundable/pinnable. `/` shows the global leaderboard with dual scoring (direct pool + graph importance), live activity feed (SSE), header network stats, velocity indicators per item. `/t/<event_id>` shows threaded discussion with per-post funding. `/b/<bundle_cid>` shows archived conversation snapshot with completeness proof. `/g/<ref>` shows the citation neighborhood. `/orphans` surfaces undiscussed funded content with "needs analysis" callouts. `/verify/<ref>` shows inclusion proof anchored to Bitcoin. News sites embed the widget. If a spike hits, the system degrades gracefully, not catastrophically. The new user journey (§New User Journey) is satisfied end-to-end: arrive → read → explore → fortify → comment → return.
+Exit: share `https://ocdn.is/v/<ref>` → recipient sees the content (inline render for open; preview + price tag for paid) with Fortify button, Fund Thread button, live funding counter, and comment box. Open-access content renders full document inline — "free to read, pay to preserve." Paid content shows free preview + Buy button (cheapest host). Click Fortify → three-tier flow (WebLN → QR → wallet guide) → counter updates in seconds. Click Buy → L402 payment → full content renders. Comment → thread appears as nano-blob (comment CID fetchable via `GET /cid/{event_id}`), body edges rendered as clickable citation links. Fund Thread → all comments in thread receive funding proportionally, sustainability meters update. "Preserve this conversation" → ThreadBundleV1 snapshot created, single CID fundable/pinnable. `/` shows the global leaderboard with dual scoring (direct pool + graph importance), live activity feed (SSE), header network stats, velocity indicators per item. `/t/<event_id>` shows threaded discussion with per-post funding. `/b/<bundle_cid>` shows archived conversation snapshot with completeness proof. `/g/<ref>` shows the citation neighborhood. `/orphans` surfaces undiscussed funded content with "needs analysis" callouts. `/verify/<ref>` shows inclusion proof anchored to Bitcoin. News sites embed the widget. If a spike hits, the system degrades gracefully, not catastrophically. The new user journey (§New User Journey) is satisfied end-to-end: arrive → read (or preview + buy) → explore → fortify → comment → return.
 
 ---
 
@@ -1342,6 +1387,8 @@ Seed content determines who shows up first. Who shows up first determines cultur
 
 Common loop: `upload → share link → L402 pay → host earns → receipt → more hosts mirror → prices drop → more buyers → more sellers`. Founder's position: infrastructure operator, not marketplace. Own hosts apply RefusalV1 policy; other hosts make own choices.
 
+**Host self-upload (vending-first)**: A creator uploads to their own host, announces `access: "paid"`, sets pricing. Earns from direct L402 sales immediately — no bounty pool needed. If others Fortify, the host earns bounty rewards too. The two streams compose without conflict. This is the simplest path for sellers: upload → share link → earn per fetch.
+
 **What Layer A markets need**: `PUT /block` + `GET /block` via L402 + shareable link + host competition + optional pins. Seller handles their own marketing. No discovery layer needed — the internet is the discovery layer.
 
 ### Bootstrap Sequence
@@ -1404,19 +1451,28 @@ The protocol is invisible. The content is visible. The instrument cluster (sats 
 
 The protocol lives or dies in the first 90 seconds of a new visitor's experience. The scenario that matters: someone on Twitter/Nostr shares an ocdn.is link during a censorship spike. A wave of normies who have never heard of Lightning click through. Every design decision below serves that moment.
 
-**The arrival**
+**The arrival (the storefront)**
 
-User lands on `/v/<ref>` — a specific Epstein deposition. They see:
+User lands on `/v/<ref>` — a specific Epstein deposition. This is a product page on a storefront, not a file browser.
 
-1. The document (readable — full content, not a gated preview)
-2. The instrument cluster beside/below it:
+If the content is open-access (pool meets host threshold):
+1. The document (readable — full content rendered inline, fetched server-side from gateway)
+2. "Free to read, pay to preserve" subtitle
+
+If the content is paid (no open host / below threshold):
+1. Free preview rendered inline (first page of PDF, excerpt of text, thumbnail of image — from ≤16 KiB free-tier bytes)
+2. Price tag + Buy button: "Full document · ₿3/fetch · Buy" (cheapest host, resolved from directory)
+
+Either way, they ALSO see:
+3. The instrument cluster beside/below it:
    - Funding counter: "4,718 sats committed by 93 people"
+   - Demand: "2,340 reads this epoch"
    - Replica map: pins on Iceland, Romania, Malaysia, Switzerland — "served by 7 independent hosts across 4 jurisdictions"
    - Sustainability meter: "funded for 14 more months at current drain rate"
    - Citation inbound: "referenced by 12 funded analyses"
-3. The Fortify button (prominent, single action)
-4. Discussion thread (comments weighted by sats, citation links between documents)
-5. Activity pulse: "someone funded this +210 sats 3 minutes ago"
+4. The Fortify button (prominent, single action — buys durability, not access)
+5. Discussion thread (comments weighted by sats, citation links between documents)
+6. Activity pulse: "someone funded this +210 sats 3 minutes ago"
 
 The instrument cluster IS the pitch. It answers "why am I here instead of PACER?" without a single word of explanation. PACER doesn't show you that 93 people care enough to pay for this document's survival, or that it's replicated across 4 jurisdictions, or that 12 analysts have published funded commentary linking it to other documents. The content is commodity. The context is the product.
 
@@ -1426,16 +1482,17 @@ Seed content — material that's already publicly available and serves as the go
 
 Open access is NOT "all content is free." It is bounty-funded serving with host thresholds. Content is open only while the pool supports it. When funding dries up, content drops to paid or preview. No charity, no free CDN.
 
-The economics:
-- Hosts earn from bounty pool epoch rewards (funded by Fortify), not egress on open content
+The economics (see §Dual-Mode Host Economics):
+- Two earning streams, always both: **bounty** (epoch rewards from pool drain) + **vending** (L402 egress). Hosts earn from both on every CID they serve.
+- On open-access fetches: hosts produce receipts identical to paid fetches. Settlement doesn't distinguish. Open reads ARE demand signals that prove service and attract epoch rewards.
 - Hosts serve open content only if `pool >= host.open_min_pool_sats` (host-configured). Below threshold, host declines or falls back to L402. This is a host-level policy decision, not protocol.
 - Free reading is the loss leader. The conversion event is Fortify, not L402.
 - "Free to read, pay to preserve" is a sentence anyone understands. "Pay 3 sats to read what you can get for free on PACER" is not.
 - For large files (video, archives): open access serves derived variants only (per-page PDF renders, text extracts, thumbnails). Full raw file stays L402 unless pool is massive. For small/medium documents (court filings, text): open access serves the full file.
 
-Open access is Flywheel B (attention → funding → replication). Creator-uploaded paid content (clips, data, files) keeps its L402 gate — that's Flywheel A (marketplace). The two coexist; hosts self-select based on economics.
+Open access is Flywheel B (attention → funding → replication → more attention). The receipt loop is the key: popular open content generates more receipts → more hosts mirror it (proven demand) → faster/cheaper serving → more readers → more receipts. Creator-uploaded paid content (clips, data, files) keeps its L402 gate — that's Flywheel A (marketplace). The two coexist and compose: a host can earn from both streams on the same CID simultaneously.
 
-Implementation: ANNOUNCE event includes `access: "open" | "paid"` field (materializer convention, not protocol). Default: `paid`. Founder sets `open` on seed content. Hosts choose whether to honor it based on their `open_min_pool_sats` threshold. The materializer renders content inline vs behind paywall based on this field. UI shows "Sponsored by pool — your sats buy replicas, not access."
+Implementation: ANNOUNCE event includes `access: "open" | "paid"` field (materializer convention, not protocol). Default: `paid`. Founder sets `open` on seed content. Hosts choose whether to honor it based on their `open_min_pool_sats` threshold. The `access` field is publisher *signal*, not host *constraint* — protocol doesn't enforce it. The materializer storefront renders content inline (open) or preview + Buy button (paid) based on this field and actual host availability. UI shows "Free to read, pay to preserve" (open) or price tag + Buy (paid).
 
 **The Fortify conversion (zero-to-sats)**
 
@@ -1503,10 +1560,12 @@ The host operator doesn't need to care about Epstein or censorship. They need to
 **First 90 seconds — decision tree**
 
 ```
-Visitor lands on /v/<ref> via shared link
-  └─ Sees: readable document + instrument cluster + activity pulse
-     ├─ Reads document, satisfied, leaves (free rider — fine, they saw the cluster)
-     ├─ Reads document, clicks Fortify
+Visitor lands on /v/<ref> via shared link (the storefront)
+  └─ Open content: sees full document inline + instrument cluster + activity pulse
+  └─ Paid content: sees free preview (excerpt/thumbnail/first page) + price tag + Buy button + instrument cluster
+     ├─ Reads (or previews), satisfied, leaves (free rider — fine, they saw the cluster)
+     ├─ Clicks Buy (paid content) → L402 payment → full content renders
+     ├─ Clicks Fortify (open or paid — buys durability, not access)
      │  ├─ Has Lightning → pays → counter increments → dopamine → explores more
      │  └─ No Lightning → sees wallet guide → bookmarks → returns later (or doesn't)
      ├─ Reads document, clicks citation link → falls into cluster view → rabbit hole
@@ -1515,15 +1574,19 @@ Visitor lands on /v/<ref> via shared link
      └─ Clicks "Run a Host" → sees economics → deploys node (operator conversion)
 
 Every path except "leaves immediately" deepens engagement.
-Only one path (Fortify) requires Lightning.
-The rest — reading, exploring, commenting, citing — are frictionless.
+Two paths require Lightning: Fortify (funding) and Buy (paid content access).
+The rest — reading open content, previewing paid content, exploring, commenting, citing — are frictionless.
 ```
 
-**What this means for Step 8 (Leaderboard) deliverables**
+**What this means for Step 8 (Leaderboard + Storefront) deliverables**
 
 The new user journey implies specific additions to the Step 8 build:
 
-- **Open access rendering**: content pages must support full inline document rendering (PDF viewer, text display) for `access: "open"` content, not just thumbnails/excerpts. This is the first thing a visitor sees — it must work.
+- **Storefront rendering (the core reframe)**: the web app is a storefront, not a directory. `/v/<ref>` renders content inline (open) or shows preview + Buy button (paid). Server-side content fetch from gateway → render by MIME type. This is the first thing a visitor sees — it must work. See §Materializer Content Rendering in Step 8 deliverables.
+- **Buy button for paid content**: price tag resolved from cheapest host in directory + L402 payment flow (reuse existing WebLN/invoice flow from FortifyButton). After payment, full content renders inline.
+- **Free preview for paid content**: ≤16 KiB free-tier bytes rendered inline (text excerpt, image thumbnail, PDF first page). Shows what's behind the paywall.
+- **Demand display in instrument cluster**: fetches/epoch (from receipt count) alongside funding, copies, runway. Open-access receipts count too — demand reflects real readership.
+- **Directory pricing in UI**: "Served by 3 hosts · from ₿3/fetch" (paid) or "Open access · funded for ~8mo" (open). Per-host pricing on proof page.
 - **Live activity feed**: SSE-powered global feed on leaderboard page + per-content feed on content pages. Low-volume padding with system events (new hosts, replica count changes).
 - **Fortify onboarding**: three-tier payment flow (WebLN → QR → wallet guide). Track abandonment at each tier.
 - **Orphan callouts**: "needs analysis" banners on high-funding / low-citation documents. Prominently linked from leaderboard.
@@ -1531,9 +1594,10 @@ The new user journey implies specific additions to the Step 8 build:
 - **Velocity indicators on leaderboard**: rank change arrows, trending badges, "new" labels.
 - **Collection sort/filter**: sortable by funding, date, citations, type. Filter by tags.
 - **Inline citation rendering**: `[ref:...]` tokens in comments rendered as clickable links to referenced content.
-- **ANNOUNCE `access` field**: materializer convention. `"open"` = sponsored availability (served free while pool meets host threshold); `"paid"` = L402 gated. Default `"paid"`.
+- **ANNOUNCE `access` field**: materializer convention. `"open"` = publisher signal for open-access; `"paid"` = L402 gated (default). Publisher *intent*, not host *constraint* (see §Dual-Mode Host Economics).
 - **`PricingV1.open_min_pool_sats`**: host-configured threshold. Below it, host declines open-access serving or falls back to L402. Prevents free-CDN abuse.
-- **"Sponsored by pool" UI copy**: open-access content pages show "Sponsored by pool — your sats buy replicas, not access" and the Fortify supply quote: "+X sats → est. +Y replicas."
+- **"Free to read, pay to preserve" UI copy**: open-access content pages. Paid content pages: price tag + "Buy" + Fortify supply quote: "+X sats → est. +Y replicas."
+- **Gateway persistence prerequisite**: asset/file manifests must be persisted to disk (current in-memory Map loses state on restart). Required for server-side content fetch.
 
 ### Client Interaction Model (what the browser actually does)
 

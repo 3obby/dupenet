@@ -13,6 +13,13 @@ hr { border: 0; border-top: 1px solid #ccc; margin: 8px 0; }
 .indent { padding-left: 20px; }
 pre { white-space: pre-wrap; word-break: break-all; }
 
+/* Inline content rendering */
+.content-render { margin: 4px 0; }
+.content-render pre { background: #f8f8f8; padding: 8px; border: 1px solid #eee; max-height: 600px; overflow: auto; font-size: 12px; }
+.content-render table { font-size: 12px; }
+.content-render td, .content-render th { padding: 1px 6px; border: 1px solid #ddd; }
+.content-render iframe { background: #fff; }
+
 /* Instrument cluster */
 .cluster { display: flex; gap: 12px; flex-wrap: wrap; align-items: baseline; }
 .activity { line-height: 1.8; }

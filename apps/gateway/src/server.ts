@@ -16,7 +16,8 @@ import { resolve } from "node:path";
 import { existsSync } from "node:fs";
 import Fastify from "fastify";
 import { BlockStore } from "./storage/block-store.js";
-import { setGenesisTimestamp } from "@dupenet/physics";
+import { MetadataStore } from "./storage/metadata-store.js";
+import { setGenesisTimestamp, signEventPayload, fromHex } from "@dupenet/physics";
 import { blockRoutes, type BlockRouteContext } from "./routes/block.js";
 import { fileRoutes } from "./routes/file.js";
 import { assetRoutes } from "./routes/asset.js";
@@ -69,9 +70,11 @@ export async function buildApp(deps?: GatewayDeps) {
     },
   );
 
-  // Initialize block store
+  // Initialize block store + metadata persistence
   const store = new BlockStore(config.blockStorePath);
   await store.init();
+  const meta = new MetadataStore(config.blockStorePath);
+  await meta.init();
 
   // L402 dependencies (null = dev mode, blocks served for free)
   const lndClient =
@@ -103,9 +106,9 @@ export async function buildApp(deps?: GatewayDeps) {
 
   // Register routes
   blockRoutes(app, blockCtx);
-  fileRoutes(app, store);
-  assetRoutes(app);
-  cidRoutes(app, store);
+  fileRoutes(app, store, meta);
+  assetRoutes(app, meta);
+  cidRoutes(app, store, meta);
   pricingRoutes(app);
   healthRoutes(app, store);
 
@@ -135,4 +138,43 @@ if (
       process.exit(1);
     }
   });
+
+  // Self-register with coordinator (non-blocking, retry on failure)
+  if (config.coordinatorUrl && config.hostPrivateKeyHex && config.hostPubkey) {
+    registerWithCoordinator().catch(() => {});
+  }
+}
+
+/** Announce this gateway as a host to the coordinator. */
+async function registerWithCoordinator(): Promise<void> {
+  const sk = fromHex(config.hostPrivateKeyHex);
+  const payload = {
+    pubkey: config.hostPubkey,
+    endpoint: config.hostEndpoint || null,
+    pricing: {
+      min_request_sats: config.minRequestSats,
+      sats_per_gb: config.satsPerGb,
+    },
+  };
+  const sig = await signEventPayload(sk, payload);
+
+  // Retry up to 5 times with backoff (coordinator may not be ready)
+  for (let attempt = 1; attempt <= 5; attempt++) {
+    try {
+      const res = await fetch(`${config.coordinatorUrl}/host/register`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ ...payload, sig }),
+      });
+      if (res.ok || res.status === 201) {
+        console.log(`[gateway] registered with coordinator as ${config.hostPubkey.slice(0, 12)}..`);
+        return;
+      }
+      console.warn(`[gateway] host registration returned ${res.status}, attempt ${attempt}/5`);
+    } catch (err) {
+      console.warn(`[gateway] host registration failed (attempt ${attempt}/5):`, err);
+    }
+    await new Promise((r) => setTimeout(r, attempt * 3000));
+  }
+  console.error("[gateway] host registration failed after 5 attempts");
 }

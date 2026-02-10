@@ -20,6 +20,12 @@ export const config = {
   mintUrl: env("MINT_URL", "http://localhost:3101"),
   /** This gateway operator's Ed25519 public key (hex). */
   hostPubkey: env("HOST_PUBKEY", ""),
+  /** Private key for signing host registration (hex, optional). */
+  hostPrivateKeyHex: env("HOST_PRIVATE_KEY_HEX", ""),
+  /** Coordinator URL for self-registration (optional). */
+  coordinatorUrl: env("COORDINATOR_URL", ""),
+  /** Public endpoint URL announced to the directory (optional). */
+  hostEndpoint: env("HOST_ENDPOINT", ""),
   minRequestSats: parseInt(env("MIN_REQUEST_SATS", "3"), 10),
   satsPerGb: parseInt(env("SATS_PER_GB", "500"), 10),
   /** Protocol genesis timestamp (ms). 0 = Unix epoch. Override for testing. */

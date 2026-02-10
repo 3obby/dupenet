@@ -5,17 +5,9 @@
 
 import type { FastifyInstance } from "fastify";
 import { cidFromObject, type CID, type AssetRootV1 } from "@dupenet/physics";
-import { getManifest } from "./file.js";
+import type { MetadataStore } from "../storage/metadata-store.js";
 
-/** In-memory asset store. TODO: move to coordinator/DB in Sprint 3. */
-const assets = new Map<CID, AssetRootV1>();
-
-/** Look up an asset by root CID. Used by /cid/:hash route. */
-export function getAsset(root: CID): AssetRootV1 | undefined {
-  return assets.get(root);
-}
-
-export function assetRoutes(app: FastifyInstance): void {
+export function assetRoutes(app: FastifyInstance, meta: MetadataStore): void {
   /**
    * PUT /asset/:root — register an asset root.
    * Verifies: asset_root_cid = SHA256(canonical(AssetRootV1))
@@ -42,7 +34,7 @@ export function assetRoutes(app: FastifyInstance): void {
       }
 
       // Verify original file manifest exists
-      const manifest = getManifest(asset.original.file_root as CID);
+      const manifest = meta.getManifest(asset.original.file_root as CID);
       if (!manifest) {
         return reply.status(422).send({
           error: "missing_file_manifest",
@@ -50,7 +42,7 @@ export function assetRoutes(app: FastifyInstance): void {
         });
       }
 
-      assets.set(root as CID, asset);
+      await meta.putAsset(root as CID, asset);
       return reply.status(201).send({ ok: true, asset_root: root });
     },
   );
@@ -67,7 +59,7 @@ export function assetRoutes(app: FastifyInstance): void {
         return reply.status(400).send({ error: "invalid_root" });
       }
 
-      const asset = assets.get(root as CID);
+      const asset = meta.getAsset(root as CID);
       if (!asset) {
         return reply.status(404).send({ error: "not_found" });
       }
@@ -88,7 +80,7 @@ export function assetRoutes(app: FastifyInstance): void {
         return reply.status(400).send();
       }
 
-      const asset = assets.get(root as CID);
+      const asset = meta.getAsset(root as CID);
       if (!asset) {
         return reply.status(404).send();
       }

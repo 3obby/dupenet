@@ -2,6 +2,7 @@ import {
   getContentStats,
   getEvents,
   getThread,
+  fetchContentForRender,
   fmtSats,
   fmtDate,
   shortHex,
@@ -50,10 +51,17 @@ export default async function ContentPage({
   const title = (meta.title as string) ?? shortHex(ref);
   const description = meta.description as string | undefined;
   const tags = meta.tags as string[] | undefined;
+  const mime = meta.mime as string | undefined;
+  const size = meta.size as number | undefined;
   const access = (meta.access as string) ?? "paid";
   const from = announce?.from ?? list?.from;
   const ts = announce?.ts ?? list?.ts;
   const threadCount = thread ? countReplies(thread) : 0;
+
+  // Fetch content for inline rendering (open-access, ≤128 KiB)
+  const content = access === "open"
+    ? await fetchContentForRender(ref, mime, size)
+    : null;
 
   return (
     <>
@@ -85,6 +93,14 @@ export default async function ContentPage({
         <>
           <br />
           <span className="t">[{tags.join(", ")}]</span>
+        </>
+      )}
+
+      {/* Inline content (open access) */}
+      {content && (
+        <>
+          <hr />
+          <InlineContent content={content} mime={mime} />
         </>
       )}
 
@@ -185,4 +201,82 @@ function countReplies(node: ThreadNode): number {
   let count = node.replies.length;
   for (const r of node.replies) count += countReplies(r);
   return count;
+}
+
+function InlineContent({
+  content,
+  mime,
+}: {
+  content: { text: string; mime: string };
+  mime?: string;
+}) {
+  // Image — rendered as data URI
+  if (content.mime.startsWith("image/")) {
+    return (
+      <div className="content-render">
+        {/* eslint-disable-next-line @next/next/no-img-element */}
+        <img src={content.text} alt="content" style={{ maxWidth: "100%" }} />
+      </div>
+    );
+  }
+
+  // HTML — render in sandboxed iframe via srcdoc
+  if (content.mime === "text/html") {
+    return (
+      <div className="content-render">
+        <iframe
+          srcDoc={content.text}
+          sandbox=""
+          style={{ width: "100%", height: "400px", border: "1px solid #ccc" }}
+          title="content"
+        />
+      </div>
+    );
+  }
+
+  // JSON — pretty-print
+  if (content.mime === "application/json") {
+    let pretty = content.text;
+    try {
+      pretty = JSON.stringify(JSON.parse(content.text), null, 2);
+    } catch { /* use as-is */ }
+    return (
+      <div className="content-render">
+        <pre>{pretty}</pre>
+      </div>
+    );
+  }
+
+  // CSV — render as simple table
+  if (mime === "text/csv" || content.mime === "text/csv") {
+    const lines = content.text.split("\n").filter(Boolean);
+    const header = lines[0]?.split(",") ?? [];
+    const rows = lines.slice(1, 21); // First 20 rows
+    return (
+      <div className="content-render">
+        <table>
+          <thead>
+            <tr>{header.map((h, i) => <th key={i}>{h}</th>)}</tr>
+          </thead>
+          <tbody>
+            {rows.map((row, i) => (
+              <tr key={i}>
+                {row.split(",").map((cell, j) => <td key={j}>{cell}</td>)}
+              </tr>
+            ))}
+          </tbody>
+        </table>
+        {lines.length > 21 && (
+          <span className="t">... {lines.length - 21} more rows</span>
+        )}
+      </div>
+    );
+  }
+
+  // Default text (plain text, markdown, etc.)
+  return (
+    <div className="content-render">
+      <pre>{content.text}</pre>
+    </div>
+  );
 }

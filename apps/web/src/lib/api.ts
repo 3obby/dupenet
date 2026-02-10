@@ -4,6 +4,7 @@
  */
 
 const COORDINATOR = process.env.COORDINATOR_URL ?? "http://localhost:3102";
+const GATEWAY = process.env.GATEWAY_URL ?? "http://localhost:3100";
 
 // ── Types ──────────────────────────────────────────────────────────
 
@@ -174,6 +175,128 @@ export async function getContentStats(ref: string): Promise<ContentStats> {
     last_payout_epoch: 0,
     recent: [],
   };
+}
+
+// ── Content bytes (server-side gateway fetch) ─────────────────────
+
+/** Max bytes to inline-render (128 KiB — covers all text, small images). */
+const INLINE_MAX = 128 * 1024;
+
+/**
+ * Fetch content bytes for inline rendering.
+ * Returns { bytes, mime } for single-block assets,
+ * or null if content is too large, behind L402, or not found.
+ *
+ * For multi-block assets: resolves asset → manifest → concatenate blocks.
+ * Only fetches open-access content that fits within INLINE_MAX.
+ */
+export async function fetchContentForRender(
+  ref: string,
+  declaredMime?: string,
+  declaredSize?: number,
+): Promise<{ text: string; mime: string } | null> {
+  // Skip if declared size exceeds inline limit
+  if (declaredSize && declaredSize > INLINE_MAX) return null;
+
+  try {
+    // Try GET /asset/:ref first to get the asset root (manifest pointer)
+    const assetRes = await fetch(`${GATEWAY}/asset/${ref}`, {
+      cache: "no-store",
+    });
+    if (!assetRes.ok) {
+      // Might be a raw block — try direct fetch
+      return fetchRawBlock(ref, declaredMime);
+    }
+
+    const asset = (await assetRes.json()) as {
+      kind: string;
+      original: {
+        file_root: string;
+        mime?: string;
+        size: number;
+      };
+    };
+
+    const mime = asset.original.mime ?? declaredMime ?? "application/octet-stream";
+    const size = asset.original.size;
+
+    // Skip binary types that are too large or non-renderable
+    if (size > INLINE_MAX) return null;
+
+    // Get file manifest
+    const fileRes = await fetch(`${GATEWAY}/file/${asset.original.file_root}`, {
+      cache: "no-store",
+    });
+    if (!fileRes.ok) return null;
+
+    const manifest = (await fileRes.json()) as { blocks: string[] };
+
+    // Fetch all blocks and concatenate
+    const chunks: Uint8Array[] = [];
+    for (const blockCid of manifest.blocks) {
+      const blockRes = await fetch(`${GATEWAY}/block/${blockCid}`, {
+        cache: "no-store",
+      });
+      if (!blockRes.ok) return null; // L402 or missing
+      chunks.push(new Uint8Array(await blockRes.arrayBuffer()));
+    }
+
+    const totalSize = chunks.reduce((s, c) => s + c.length, 0);
+    const combined = new Uint8Array(totalSize);
+    let offset = 0;
+    for (const c of chunks) {
+      combined.set(c, offset);
+      offset += c.length;
+    }
+
+    // For text-based MIME types, decode as UTF-8
+    if (isTextMime(mime)) {
+      return { text: new TextDecoder().decode(combined), mime };
+    }
+
+    // For images, encode as base64 data URI
+    if (mime.startsWith("image/")) {
+      const b64 = Buffer.from(combined).toString("base64");
+      return { text: `data:${mime};base64,${b64}`, mime };
+    }
+
+    // For other types (PDF etc.), skip inline rendering for now
+    return null;
+  } catch {
+    return null;
+  }
+}
+
+async function fetchRawBlock(
+  cid: string,
+  declaredMime?: string,
+): Promise<{ text: string; mime: string } | null> {
+  try {
+    const res = await fetch(`${GATEWAY}/block/${cid}`, { cache: "no-store" });
+    if (!res.ok) return null;
+    const bytes = new Uint8Array(await res.arrayBuffer());
+    if (bytes.length > INLINE_MAX) return null;
+    const mime = declaredMime ?? "application/octet-stream";
+    if (isTextMime(mime)) {
+      return { text: new TextDecoder().decode(bytes), mime };
+    }
+    if (mime.startsWith("image/")) {
+      const b64 = Buffer.from(bytes).toString("base64");
+      return { text: `data:${mime};base64,${b64}`, mime };
+    }
+    return null;
+  } catch {
+    return null;
+  }
+}
+
+function isTextMime(mime: string): boolean {
+  return (
+    mime.startsWith("text/") ||
+    mime === "application/json" ||
+    mime === "application/xml" ||
+    mime === "application/javascript"
+  );
 }
 
 // ── Helpers ────────────────────────────────────────────────────────

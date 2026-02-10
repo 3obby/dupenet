@@ -911,4 +911,57 @@ DocRef: MVP_PLAN:§Post-MVP Assessment Queue
     - trigger: pre-launch documentation pass
 
 
+================================================================================
+MVP PLAN UPDATE: DUAL-MODE HOST ECONOMICS + STOREFRONT (2026-02-10)
+================================================================================
+
+Architectural reframe applied to mvp_plan.md:
+
+[x] Dual-mode host economics             replaced "open vs paid" binary with spectrum
+    - `access` field is publisher *signal*, not host *constraint*
+    - Two earning streams always both available: bounty (epoch rewards) + vending (L402 egress)
+    - Hosts earn from BOTH simultaneously on every CID they serve
+    - Open-access fetches generate receipts identical to paid fetches — settlement doesn't distinguish
+    - Host self-upload (vending-first): upload → set pricing → earn from L402 sales. Bounty composes if others Fortify.
+    - Fixed error: old plan said "no egress revenue on open-access fetches" — now correctly states both streams active
+
+[x] Storefront rendering model            web app = storefront, not directory
+    - /v/<ref> renders content inline, not behind download link
+    - Open content: full render, fetched server-side from gateway. "Free to read, pay to preserve."
+    - Paid content: free preview (≤16 KiB), price tag + Buy button (cheapest host from directory)
+    - Always show: instrument cluster, Fortify button, discussion thread, proof link
+    - Download link becomes secondary ("raw" link for power users)
+    - Prerequisite: gateway must persist asset/file manifests to disk (in-memory Map bug)
+
+[x] Demand signal from receipts           receipt_count as traffic proxy
+    - GET /feed/funded enriched with demand field (fetches/epoch)
+    - Open-access receipts count → demand reflects real readership
+    - Instrument cluster shows demand alongside funding, copies, runway
+    - Node-agents use demand + balance for smarter mirror targeting
+
+[x] Directory pricing display             per-host per-CID pricing in UI
+    - "Served by 3 hosts · from ₿3/fetch" (paid) or "Open access · funded for ~8mo" (open)
+    - Buy button resolves cheapest host from GET /directory
+    - Per-host pricing visible on proof page
+
+What this does NOT change:
+    - Protocol (receipts, settlement, pool credits — all identical)
+    - EventV1 envelope (ANNOUNCE `access` field already exists)
+    - PricingV1 (already has all needed fields)
+    - Host registration / spot-checks / scoring
+    - Epoch settlement logic (receipts are receipts regardless of access mode)
+
+Sections updated in mvp_plan.md:
+    - §Egress Pricing → §Dual-Mode Host Economics (rewritten)
+    - §Event Kind Bytes table (ANNOUNCE row updated)
+    - §Layer 3: Earnings (dual streams noted)
+    - §Interface Boundaries (operator earns from both streams)
+    - §Epoch-Based Rewards (receipts not qualified as "paid")
+    - §Step 8 (retitled to "Leaderboard + Storefront", content page spec rewritten)
+    - §New User Journey (arrival section, economics, decision tree, Step 8 deliverables)
+    - §Flywheel A (host self-upload vending-first noted)
+    - §GET /feed/funded (demand field added)
+    - §GET /content/:ref/signals (demand field added)
+
+
 LEGEND: [x] done  [~] partial/stub  [ ] not started

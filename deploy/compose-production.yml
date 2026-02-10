@@ -51,6 +51,9 @@ services:
       LND_MACAROON_PATH: /lnd/data/chain/bitcoin/signet/admin.macaroon
       MINT_URL: http://mint1:3101
       HOST_PUBKEY: ${HOST_PUBKEY}
+      HOST_PRIVATE_KEY_HEX: ${AGENT_HOST_PRIVATE_KEY_HEX:-}
+      COORDINATOR_URL: http://coordinator:3102
+      HOST_ENDPOINT: https://ocdn.is
       MIN_REQUEST_SATS: ${MIN_REQUEST_SATS:-3}
       SATS_PER_GB: ${SATS_PER_GB:-500}
       GENESIS_TIMESTAMP_MS: ${GENESIS_TIMESTAMP_MS:-0}

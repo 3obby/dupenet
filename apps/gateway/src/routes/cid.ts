@@ -14,13 +14,13 @@
 
 import type { FastifyInstance } from "fastify";
 import type { BlockStore } from "../storage/block-store.js";
+import type { MetadataStore } from "../storage/metadata-store.js";
 import type { CID } from "@dupenet/physics";
-import { getManifest } from "./file.js";
-import { getAsset } from "./asset.js";
 
 export function cidRoutes(
   app: FastifyInstance,
   store: BlockStore,
+  meta: MetadataStore,
 ): void {
   app.get<{ Params: { hash: string } }>(
     "/cid/:hash",
@@ -32,13 +32,13 @@ export function cidRoutes(
       }
 
       // 1. Check if it's an asset root → redirect
-      const asset = getAsset(hash as CID);
+      const asset = meta.getAsset(hash as CID);
       if (asset) {
         return reply.code(302).redirect(`/asset/${hash}`);
       }
 
       // 2. Check if it's a file manifest → serve JSON
-      const manifest = getManifest(hash as CID);
+      const manifest = meta.getManifest(hash as CID);
       if (manifest) {
         return reply.code(302).redirect(`/file/${hash}`);
       }
