@@ -1,6 +1,6 @@
 # Multi-stage build for Next.js web app (standalone output)
 FROM node:20-alpine AS builder
-WORKDIR /app
+WORKDIR /build
 
 # Copy monorepo root + web package.json for dependency install
 COPY package.json package-lock.json ./
@@ -14,6 +14,9 @@ COPY apps/web/ apps/web/
 ENV NEXT_TELEMETRY_DISABLED=1
 RUN npm run build --workspace=@dupenet/web
 
+# Debug: show standalone structure
+RUN ls -la apps/web/.next/standalone/ && ls -la apps/web/.next/standalone/*/apps/web/ 2>/dev/null || true
+
 # Runtime — minimal image
 FROM node:20-alpine
 WORKDIR /app
@@ -21,16 +24,14 @@ WORKDIR /app
 ENV NODE_ENV=production
 ENV NEXT_TELEMETRY_DISABLED=1
 
-# Copy standalone output (preserves monorepo structure)
-COPY --from=builder /app/apps/web/.next/standalone/ ./
+# Copy standalone output — the structure mirrors the builder WORKDIR name
+# Builder WORKDIR is /build, so standalone has /build/apps/web/server.js
+COPY --from=builder /build/apps/web/.next/standalone/build/apps/web/ ./
+COPY --from=builder /build/apps/web/.next/standalone/build/node_modules/ ./node_modules/
+COPY --from=builder /build/apps/web/.next/standalone/build/package.json ./package.json
 
-# Copy static assets into standalone structure
-COPY --from=builder /app/apps/web/.next/static/ ./dupenet/apps/web/.next/static/
-
-# Copy public dir if it exists (currently none, but future-proof)
-# COPY --from=builder /app/apps/web/public/ ./dupenet/apps/web/public/
-
-WORKDIR /app/dupenet/apps/web
+# Copy static assets
+COPY --from=builder /build/apps/web/.next/static/ ./.next/static/
 
 EXPOSE 3200
 ENV PORT=3200
