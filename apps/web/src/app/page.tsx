@@ -1,4 +1,5 @@
 import { getFeedFunded, fmtSats, shortHex } from "@/lib/api";
+import { IdentityChip } from "@/components/KeyProvider";
 
 export const revalidate = 30;
 
@@ -9,6 +10,9 @@ export default async function Leaderboard() {
     <>
       <header>
         <b>dupenet</b> &mdash; content ranked by economic commitment
+        <span style={{ float: "right" }}>
+          <IdentityChip />
+        </span>
       </header>
       <hr />
       {items.length === 0 ? (

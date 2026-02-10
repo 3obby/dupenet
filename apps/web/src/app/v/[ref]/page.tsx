@@ -9,6 +9,8 @@ import {
   GATEWAY,
   type ThreadNode,
 } from "@/lib/api";
+import { FortifyButton } from "@/components/FortifyButton";
+import { CommentBox } from "@/components/CommentBox";
 
 export const revalidate = 30;
 
@@ -95,7 +97,9 @@ export default async function ContentPage({
         </tbody>
       </table>
       <hr />
-      {/* Download link */}
+      {/* Actions */}
+      <FortifyButton poolRef={ref} />
+      {" | "}
       <a href={`${GATEWAY}/cid/${ref}`}>download</a>
       {" | "}
       <a href={`/p/${ref}`}>proof</a>
@@ -108,7 +112,14 @@ export default async function ContentPage({
           <ThreadTree nodes={thread.replies} depth={0} />
         </>
       ) : (
-        <span className="t">no comments</span>
+        <span className="t">no comments yet</span>
+      )}
+      <hr />
+      {/* Comment box */}
+      {rootEventId ? (
+        <CommentBox parentRef={rootEventId} />
+      ) : (
+        <CommentBox parentRef={ref} />
       )}
     </>
   );

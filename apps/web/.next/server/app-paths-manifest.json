@@ -1,7 +1,8 @@
 {
+  "/api/event/route": "app/api/event/route.js",
   "/_not-found/page": "app/_not-found/page.js",
-  "/c/[ref]/page": "app/c/[ref]/page.js",
+  "/v/[ref]/page": "app/v/[ref]/page.js",
   "/p/[ref]/page": "app/p/[ref]/page.js",
-  "/page": "app/page.js",
-  "/v/[ref]/page": "app/v/[ref]/page.js"
+  "/c/[ref]/page": "app/c/[ref]/page.js",
+  "/page": "app/page.js"
 }

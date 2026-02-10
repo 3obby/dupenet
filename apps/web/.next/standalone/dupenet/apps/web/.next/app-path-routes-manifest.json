@@ -1,7 +1,8 @@
 {
+  "/api/event/route": "/api/event",
   "/_not-found/page": "/_not-found",
-  "/c/[ref]/page": "/c/[ref]",
+  "/v/[ref]/page": "/v/[ref]",
   "/p/[ref]/page": "/p/[ref]",
-  "/page": "/",
-  "/v/[ref]/page": "/v/[ref]"
+  "/c/[ref]/page": "/c/[ref]",
+  "/page": "/"
 }

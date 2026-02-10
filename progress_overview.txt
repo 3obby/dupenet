@@ -279,7 +279,7 @@ Plan constants still missing from code (add during relevant sprint):
 [x] /v/[ref] Content                  metadata + stats + thread — from GET /events + /bounty + /thread
 [x] /c/[ref] Collection               list items with per-item pool balances — from GET /events + /bounty
 [x] /p/[ref] Proof                    hash, pool, hosts, epoch proofs — from /bounty + /directory + /epoch/summary
-    Total: 221/221 tests pass + Next.js build clean (4 routes, all server-rendered)
+    Total: 228/228 tests pass + Next.js build clean (4 pages + API route, server + client components)
 
 ## Sprint 7c Implementation (2026-02-09)
 
@@ -564,24 +564,27 @@ drives adoption, distribution, funding, and institutional revenue. The new user 
 (MVP_PLAN:§New User Journey) lives or dies here.
 DocRef: MVP_PLAN:§The Leaderboard (Step 8), §New User Journey (First Contact)
 
-### Minimum ship (4 pages) — DONE (read-only, craigslist aesthetic)
+### Minimum ship (4 pages + interaction) — DONE
 
-[x] Scaffold web app                   apps/web, Next.js 15, App Router, server components only
-    - monospace system font, no CSS framework, no JS client-side
-    - API client: src/lib/api.ts (coordinator + gateway URLs from env)
-    - revalidate=30s server-side caching on all pages
+[x] Scaffold web app                   apps/web, Next.js 15, App Router, server + client components
+    - monospace system font, no CSS framework, minimal client JS (~3 kB per interactive page)
+    - API client: src/lib/api.ts (server-side), src/lib/event-client.ts (client-side)
+    - revalidate=30s server-side caching, router.refresh() after user actions
 
 [x] / Leaderboard
     - table: rank #, sat balance, host count, title (linked), proof link
     - server-rendered from GET /feed/funded
-    - (deferred: Fortify button, SSE live updates, total sats header)
+    - IdentityChip in header: generate key, show pubkey short, clear
+    - (deferred: SSE live updates, total sats header)
 
 [x] /v/<ref> Content page
     - title, author, date, description, tags
     - stats row: sat balance, access mode, estimated runway
+    - [fortify] button: amount selector (21/210/2100/custom), sign + POST FUND event
+    - comment box: textarea, sign + POST event (kind=POST), thread refresh
     - download link (gateway /cid/<ref>), proof link
     - thread: nested replies with author, sats, date, text (from GET /thread)
-    - (deferred: Fortify button, inline render, comment box, WebLN)
+    - (deferred: inline render, WebLN payment, SSE counter)
 
 [x] /c/<list> Collection page
     - title, item count, author, date, description
@@ -611,12 +614,30 @@ DocRef: MVP_PLAN:§The Leaderboard (Step 8), §New User Journey (First Contact)
 
 ### Client interaction model (MVP_PLAN:§Client Interaction Model)
 
-[ ] Browser keypair lifecycle           generate Ed25519 on first write → indexedDB (encrypted) + localStorage (pk)
-    - identity chip UI: pubkey short, export/import, NIP-07 detect, reset
+[x] Browser keypair lifecycle           generate Ed25519 on first write → indexedDB + localStorage (pk)
+    - src/lib/keys.ts: indexedDB "dupenet" store, localStorage cache for pubkey hex
+    - src/components/KeyProvider.tsx: React context, IdentityChip (short pubkey + generate/clear)
     - "no key" mode: read-only browsing, write prompts key creation (1 tap)
-    - NIP-07 upgrade: if window.nostr present, prefer it for signing
-[ ] Event construction in browser       physics library must work in browser (already uses @noble/hashes — OK)
-    - EventV1 compose → sign → POST /event (same pipeline for comment/fund/announce/list)
+    - uses @noble/ed25519 + @noble/hashes (cross-browser, incl. Firefox)
+    - (deferred: NIP-07 upgrade, export/import)
+[x] Event construction in browser       browser-native crypto, no physics dependency in client bundle
+    - src/lib/crypto.ts: minimal deterministic CBOR encoder (RFC 8949 canonical, matches cbor-x)
+    - Ed25519 sign via @noble/ed25519, SHA256 via @noble/hashes/sha2
+    - EventV1 compose → sign → POST /api/event proxy → coordinator
+    - src/lib/event-client.ts: createFundEvent, createPostEvent, postEvent
+[x] Fortify button                     amount selector (21/210/2100/custom) → sign FUND event → POST
+    - src/components/FortifyButton.tsx: "use client", amount picker, status feedback
+    - on /v/<ref> content page: [fortify] link → amount selector → send → "funded" → refresh
+    - MVP: sats trusted (no payment verification). TODO: payment-intent binding.
+[x] Comment box                         text input → sign POST event (kind=0x03) → POST
+    - src/components/CommentBox.tsx: "use client", textarea, status feedback
+    - ref = root event_id (ANNOUNCE or content ref), thread appears after refresh
+[x] API proxy route                     POST /api/event → coordinator POST /event
+    - src/app/api/event/route.ts: keeps coordinator URL server-side, no CORS needed
+[x] Page integration                    IdentityChip on leaderboard, FortifyButton + CommentBox on /v/<ref>
+    - layout.tsx: KeyProvider wraps all pages
+    - page.tsx: IdentityChip in header (float right)
+    - v/[ref]/page.tsx: FortifyButton + CommentBox below content
 [ ] Event PoW (Web Worker)             free writes: PoW in Web Worker, never block UI, "publishing..." spinner
     - challenge = SHA256("EV1_POW" || from || ts || kind || ref || SHA256(body))
     - find nonce where H(challenge || nonce) < EVENT_POW_TARGET (~200ms mobile)
@@ -634,7 +655,8 @@ DocRef: MVP_PLAN:§The Leaderboard (Step 8), §New User Journey (First Contact)
 
 ### Fortify payment flow (MVP_PLAN:§New User Journey — zero-to-sats)
 
-[ ] WebLN auto-pay (tier 1)            Fortify → amount selector (21/210/2100/custom) → WebLN pays → done
+[~] Fortify UI (MVP — trusted sats)    amount selector + sign + POST. No payment verification yet.
+[ ] WebLN auto-pay (tier 1)            Fortify → WebLN pays → counter increments. Requires /payreq endpoint.
 [ ] QR/invoice fallback (tier 2)       no WebLN → QR code + invoice string → scan in wallet app
 [ ] Wallet guide (tier 3)              no wallet → one-screen guide (Phoenix/Alby). Accept bounce-and-return.
 [ ] Fortify abandonment tracking        measure clicks → completions per tier. Fiat bridge trigger: >60% abandon.

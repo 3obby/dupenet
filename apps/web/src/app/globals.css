@@ -11,3 +11,38 @@ hr { border: 0; border-top: 1px solid #ccc; margin: 8px 0; }
 .t { color: #666; }
 .indent { padding-left: 20px; }
 pre { white-space: pre-wrap; word-break: break-all; }
+
+/* Interactive components */
+.link-btn {
+  font: inherit;
+  color: #00e;
+  background: none;
+  border: none;
+  padding: 0;
+  cursor: pointer;
+  text-decoration: underline;
+}
+.link-btn:hover { color: #00a; }
+.link-btn:disabled { color: #999; cursor: default; text-decoration: none; }
+.link-btn.t { color: #666; }
+.link-btn.t:hover { color: #333; }
+
+.inline-input {
+  font: inherit;
+  width: 60px;
+  border: 1px solid #ccc;
+  padding: 1px 3px;
+  background: #fff;
+}
+
+.fortify-row { display: inline-flex; align-items: center; gap: 4px; flex-wrap: wrap; }
+
+.comment-box { margin-top: 4px; }
+.comment-input {
+  font: inherit;
+  width: 100%;
+  border: 1px solid #ccc;
+  padding: 4px;
+  resize: vertical;
+  background: #fff;
+}
