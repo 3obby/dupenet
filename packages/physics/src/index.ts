@@ -100,6 +100,8 @@ export {
   verifyEvent,
   encodeEventBody,
   decodeEventBody,
+  buildEventPowChallenge,
+  verifyEventPow,
 } from "./event-v1.js";
 
 // All schemas

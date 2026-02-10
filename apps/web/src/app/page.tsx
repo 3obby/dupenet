@@ -1,30 +1,45 @@
-import { getFeedFunded, fmtSats, shortHex } from "@/lib/api";
+import { getFeedFunded, getDirectory, fmtSats, shortHex } from "@/lib/api";
 import { IdentityChip } from "@/components/KeyProvider";
 
 export const revalidate = 30;
 
 export default async function Leaderboard() {
-  const items = await getFeedFunded(0, 100);
+  const [items, hosts] = await Promise.all([
+    getFeedFunded(0, 100),
+    getDirectory(),
+  ]);
+
+  const totalSats = items.reduce((s, i) => s + i.balance, 0);
+  const activeHosts = hosts.filter((h) => h.status === "TRUSTED").length;
 
   return (
     <>
       <header>
-        <b>dupenet</b> &mdash; content ranked by economic commitment
+        <b>dupenet</b>
         <span style={{ float: "right" }}>
           <IdentityChip />
         </span>
       </header>
       <hr />
+
+      <div className="cluster">
+        <span>{items.length}</span>
+        <span>{"\u0e3f"}{fmtSats(totalSats)}</span>
+        <span>{"\ud83d\udcbf"}{activeHosts}</span>
+      </div>
+
+      <hr />
+
       {items.length === 0 ? (
-        <p className="t">no funded content yet</p>
+        <p className="t">-</p>
       ) : (
         <table>
           <thead>
             <tr>
               <th className="r">#</th>
-              <th className="r">sat</th>
-              <th className="r">hosts</th>
-              <th>title</th>
+              <th className="r">{"\u0e3f"}</th>
+              <th className="r">{"\ud83d\udcbf"}</th>
+              <th></th>
               <th></th>
             </tr>
           </thead>
@@ -43,7 +58,7 @@ export default async function Leaderboard() {
                   </td>
                   <td>
                     <a href={`/p/${item.pool_key}`} className="t">
-                      proof
+                      {"\ud83d\udd0d"}
                     </a>
                   </td>
                 </tr>

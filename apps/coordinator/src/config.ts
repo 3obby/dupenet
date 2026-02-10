@@ -31,4 +31,8 @@ export const config = {
   lndMacaroonPath: env("LND_MACAROON_PATH", ""),
   /** Path to LND TLS cert file. Empty = skip TLS verification (regtest). */
   lndTlsCertPath: env("LND_TLS_CERT_PATH", ""),
+
+  // ── Event PoW (spam protection for free writes) ──
+  /** Require PoW for sats=0 events. Default: false (dev), true for production. */
+  requireEventPow: env("REQUIRE_EVENT_POW", "false") === "true",
 } as const;

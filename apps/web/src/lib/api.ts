@@ -156,6 +156,29 @@ export async function getEpochSummary(
   return data?.summaries ?? [];
 }
 
+// ── Content stats (instrument cluster) ─────────────────────────
+
+export interface ContentStats {
+  balance: number;
+  total_funded: number;
+  funder_count: number;
+  host_count: number;
+  last_payout_epoch: number;
+  recent: { from: string; sats: number; ts: number; kind: number }[];
+}
+
+export async function getContentStats(ref: string): Promise<ContentStats> {
+  const data = await get<ContentStats>(`/content/${ref}/stats`);
+  return data ?? {
+    balance: 0,
+    total_funded: 0,
+    funder_count: 0,
+    host_count: 0,
+    last_payout_epoch: 0,
+    recent: [],
+  };
+}
+
 // ── Helpers ────────────────────────────────────────────────────────
 
 /** Shorten a hex pubkey: first 4 + last 4 chars. */
@@ -164,14 +187,32 @@ export function shortHex(hex: string): string {
   return `${hex.slice(0, 4)}..${hex.slice(-4)}`;
 }
 
-/** Format sats with commas. */
+/** Format sats as full BTC decimal — all 8 places, no condensing.
+ *  1234 → "0.00001234"   210 → "0.00000210"   100000000 → "1.00000000" */
 export function fmtSats(n: number): string {
-  return n.toLocaleString("en-US");
+  const s = String(Math.abs(Math.round(n)));
+  const padded = s.padStart(9, "0"); // at least 9 chars: 1 integer + 8 decimal
+  const i = padded.length - 8;
+  return padded.slice(0, i) + "." + padded.slice(i);
 }
 
 /** Format timestamp as YYYY-MM-DD. */
 export function fmtDate(tsMs: number): string {
   return new Date(tsMs).toISOString().slice(0, 10);
+}
+
+/** Relative time: "3m" "2h" "1d" "5w" */
+export function timeAgo(tsMs: number): string {
+  const s = Math.floor((Date.now() - tsMs) / 1000);
+  if (s < 60) return `${s}s`;
+  const m = Math.floor(s / 60);
+  if (m < 60) return `${m}m`;
+  const h = Math.floor(m / 60);
+  if (h < 24) return `${h}h`;
+  const d = Math.floor(h / 24);
+  if (d < 7) return `${d}d`;
+  const w = Math.floor(d / 7);
+  return `${w}w`;
 }
 
 /** Estimate runway in months: balance / (drain_rate_per_epoch * 6 * 30). */

@@ -1,8 +1,7 @@
 "use client";
 
 /**
- * Comment box — post a threaded reply.
- * Signs a POST event client-side and POSTs via API proxy.
+ * 💬 — post a threaded reply.
  */
 
 import { useState } from "react";
@@ -15,17 +14,15 @@ export function CommentBox({ parentRef }: { parentRef: string }) {
   const { publicKeyHex, generate, getPrivateKey } = useIdentity();
   const [text, setText] = useState("");
   const [status, setStatus] = useState<
-    "idle" | "sending" | "sent" | "error"
+    "idle" | "mining" | "sending" | "sent" | "error"
   >("idle");
   const [errorMsg, setErrorMsg] = useState("");
 
   if (!publicKeyHex) {
     return (
-      <span className="t">
-        <button onClick={generate} className="link-btn">
-          [create key to comment]
-        </button>
-      </span>
+      <button onClick={generate} className="link-btn" title="create key to comment">
+        {"\ud83d\udcac"}
+      </button>
     );
   }
 
@@ -35,16 +32,15 @@ export function CommentBox({ parentRef }: { parentRef: string }) {
     const pkHex = publicKeyHex;
     if (!pkHex) return;
 
-    setStatus("sending");
+    setStatus("mining");
     setErrorMsg("");
     try {
       const pk = await getPrivateKey();
-      if (!pk) {
-        setStatus("error");
-        setErrorMsg("key not found");
-        return;
-      }
-      const event = await createPostEvent(parentRef, trimmed, pk, pkHex);
+      if (!pk) { setStatus("error"); setErrorMsg("key not found"); return; }
+      const event = await createPostEvent(parentRef, trimmed, pk, pkHex, () => {
+        setStatus("mining");
+      });
+      setStatus("sending");
       const result = await postEvent(event);
       if (result.ok) {
         setStatus("sent");
@@ -55,7 +51,7 @@ export function CommentBox({ parentRef }: { parentRef: string }) {
         }, 1000);
       } else {
         setStatus("error");
-        setErrorMsg(result.error ?? "unknown error");
+        setErrorMsg(result.error ?? "rejected");
         setTimeout(() => setStatus("idle"), 3000);
       }
     } catch (e) {
@@ -65,14 +61,16 @@ export function CommentBox({ parentRef }: { parentRef: string }) {
     }
   }
 
-  if (status === "sending") return <span className="t">posting...</span>;
-  if (status === "sent") return <span>+ posted</span>;
+  if (status === "mining") return <span className="t">{"\ud83d\udcac"}mining...</span>;
+  if (status === "sending") return <span className="t">{"\ud83d\udcac"}sending...</span>;
+  if (status === "sent") return <span>{"\ud83d\udcac"}{"\u2713"}</span>;
   if (status === "error")
     return (
       <span>
-        failed{errorMsg ? `: ${errorMsg}` : ""} &mdash;{" "}
+        <span className="t">{errorMsg}</span>
+        {" "}
         <button onClick={() => setStatus("idle")} className="link-btn">
-          retry
+          {"\ud83d\udcac"}
         </button>
       </span>
     );
@@ -82,17 +80,12 @@ export function CommentBox({ parentRef }: { parentRef: string }) {
       <textarea
         value={text}
         onChange={(e) => setText(e.target.value)}
-        placeholder="comment..."
         rows={3}
         className="comment-input"
       />
       <br />
-      <button
-        onClick={submit}
-        className="link-btn"
-        disabled={!text.trim()}
-      >
-        [post]
+      <button onClick={submit} className="link-btn" disabled={!text.trim()}>
+        {"\ud83d\udcac"}
       </button>
     </div>
   );

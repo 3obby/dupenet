@@ -474,11 +474,14 @@ Exit: physics exports EventV1. Construct event, sign, verify. Pool rule tested.
 The whistleblower flow: upload a directory of PDFs with human-readable metadata.
 All publishing now goes through POST /event with appropriate kind bytes.
 
-[ ] `dupenet upload <dir>`              batch upload: chunk + upload each file in directory
-    - recursive traversal, filters by known MIME types
-    - progress: file N/M, blocks K/T overall
+[x] `dupenet upload <dir>`              batch upload: chunk + upload each file in directory
+    - recursive traversal (sorted, skips hidden files), filters by known MIME extensions
+    - progress: [N/M] filename, blocks: X/Y (Z%), cached count
     - skip already-uploaded blocks (409 Conflict = ok, resume on failure)
-    - after upload: POST kind=LIST event for collection
+    - per-file ANNOUNCE event (title = relative path, inherits --tags/--access)
+    - after all uploads: POST kind=LIST event for collection (items = all asset_roots)
+    - error handling: failed files logged, remaining files continue
+    - summary: uploaded X/Y files (size, blocks)
 [x] Upload metadata + ANNOUNCE          `dupenet upload` now emits ANNOUNCE event after asset upload
     - --title, --tags, --access open|paid flags
     - ANNOUNCE body: title, mime, size, access, tags (CBOR-encoded)
@@ -572,34 +575,67 @@ DocRef: MVP_PLAN:§The Leaderboard (Step 8), §New User Journey (First Contact)
     - revalidate=30s server-side caching, router.refresh() after user actions
 
 [x] / Leaderboard
-    - table: rank #, sat balance, host count, title (linked), proof link
-    - server-rendered from GET /feed/funded
-    - IdentityChip in header: generate key, show pubkey short, clear
-    - (deferred: SSE live updates, total sats header)
+    - network stats header: item count, ฿ total sats, 💿 active hosts
+    - table: rank #, ฿ sats, 💿 hosts, title (linked), 🔍 proof link
+    - IdentityChip in header (float right)
+    - symbols as column headers (฿ 💿 🔍), no text labels
+    - (deferred: SSE live updates, velocity indicators, inline +฿ per row)
 
 [x] /v/<ref> Content page
-    - title, author, date, description, tags
-    - stats row: sat balance, access mode, estimated runway
-    - [fortify] button: amount selector (21/210/2100/custom), sign + POST FUND event
-    - comment box: textarea, sign + POST event (kind=POST), thread refresh
-    - download link (gateway /cid/<ref>), proof link
-    - thread: nested replies with author, sats, date, text (from GET /thread)
-    - (deferred: inline render, WebLN payment, SSE counter)
+    - title, author · date, description, [tags]
+    - instrument cluster: ฿ sats  𓀠 funders  💿 copies  ◷ ~Nmo  ● paid/○ open
+    - +฿ fortify · ⤓ download · 🔍 proof
+    - activity pulse: +฿210 ab12 3m · 💬 cd34 1h (recent fund/post events)
+    - 💬 N thread count + nested replies (from · sats · Nago)
+    - 💬 comment box
+    - GET /content/:ref/stats — one-call aggregated stats for cluster
+    - (deferred: inline render for open-access, SSE counter, collection back-link)
 
 [x] /c/<list> Collection page
     - title, item count, author, date, description
-    - table: sat balance per item, ref link, proof link
+    - table: ฿ balance per item, ref link, 🔍 proof link
     - pool balance fetched per item via GET /bounty/:ref
-    - (deferred: Fund All button)
+    - (deferred: Fund All flow, collection item sizes)
 
 [x] /p/<ref> Proof page
-    - full ref hash, "sha256 verified on ingest"
-    - sat balance in pool, last payout epoch
-    - trusted hosts table: endpoint, pubkey, availability score
-    - epoch proofs table (last 6): epoch, host, receipts, clients, reward sats
-    - (deferred: Bitcoin anchor txid, evidence bundle download)
+    - hash + "sha256"
+    - instrument cluster: ฿ sats  𓀠 funders  💿 copies  ↻ last payout epoch
+    - 💿 N trusted hosts table: endpoint, pk, score
+    - ✓ N epoch proofs table: epoch, host, rcpt, clt, ฿ reward
+    - [x] copy hash + copy url buttons (CopyButton component)
+    - [x] ⤓json evidence bundle download (GET /api/evidence/:ref)
+    - (deferred: Bitcoin anchor txid, verify now re-check)
 
-### Next pass (add after 4 pages prove the loop)
+### Screen interaction polish (6-screen model)
+
+1) Read (/v/<ref>)
+[x] Collection back-link               if ref appears in LIST event, show ◀ link to /c/<list>
+
+2) Fortify (+฿)
+[x] Amount buttons 210/21k/21m         replace [21,210,2100] with [210,21000,21000000], labels: 210/21k/21m
+[ ] Fortify modal/sheet                extract from inline to overlay/bottom-sheet for mobile
+    - payment pending: spinner (฿...) + auto-poll 3s, no manual "I paid" button
+
+3) Discuss (💬)
+[x] Event PoW (Web Worker)             cross-ref: see §Client interaction model below
+
+4) Explore (/ leaderboard)
+[ ] Inline +฿ on rows                  FortifyButton per leaderboard row (or link to /v/<ref>#+฿)
+
+5) Fund collection (/c/<list>)
+[ ] Fund All flow                      amount input → size-weighted split across items → N FUND events → payment UI
+[ ] Collection item sizes              fetch ANNOUNCE metadata for size field per item
+
+6) Verify (/p/<ref>)
+[x] Copy proof URL                     copy hash + /p/<ref> URL to clipboard (CopyButton component)
+[x] Export evidence bundle             GET /api/evidence/:ref → downloadable JSON
+    - packages: ref hash, sha256 verification note, pool (balance, funded, funders, last payout),
+      hosts (count, trusted list with endpoint/pubkey/score), epoch proofs (last 6)
+    - Content-Disposition: attachment; filename="evidence-<ref12>.json"
+    - ⤓json link on proof page after hash/url copy buttons
+[ ] Verify now                         re-check hash + spot-check endpoints on demand
+
+### Next pass (add after 6-screen loop proves out)
 
 [ ] Topic leaderboards: /topic/<tag>   tag filter on leaderboard, not separate page
 [ ] Cluster page: /g/<ref>             graph neighborhood (needs enough edges to be useful)
@@ -610,7 +646,7 @@ DocRef: MVP_PLAN:§The Leaderboard (Step 8), §New User Journey (First Contact)
 [ ] Embeddable widget                  distribution mechanism, add after loop is proven
 [ ] Velocity indicators, collection sort/filter, inbound/outbound citation counts
 [ ] Fund Thread button                 fan-out over ref-chain (cheap to add, but comment+Fortify first)
-[ ] Market quote tooltip               "+X sats → est. +Y replicas" on Fortify button
+[ ] Market quote tooltip               "+฿ X → est. +Y replicas" on Fortify button
 
 ### Client interaction model (MVP_PLAN:§Client Interaction Model)
 
@@ -649,10 +685,14 @@ DocRef: MVP_PLAN:§The Leaderboard (Step 8), §New User Journey (First Contact)
       3. Dev mode bypass (no invoice, direct sign + POST)
     - src/lib/webln.ts: WebLN type declarations, hasWebLN(), payWithWebLN()
     - apps/coordinator/src/views/payment-store.ts: in-memory store (dual-keyed by event_hash + payment_hash)
-[ ] Event PoW (Web Worker)             free writes: PoW in Web Worker, never block UI, "publishing..." spinner
-    - challenge = SHA256("EV1_POW" || from || ts || kind || ref || SHA256(body))
-    - find nonce where H(challenge || nonce) < EVENT_POW_TARGET (~200ms mobile)
-    - distinct from receipt PoW (different prefix, different purpose)
+[x] Event PoW (Web Worker)             free writes: PoW in Web Worker, never block UI
+    - challenge = SHA256("EV1_POW" || from || ts_be64 || kind_u8 || ref || SHA256(body_bytes))
+    - find nonce where H(challenge || nonce_be64) < EVENT_POW_TARGET (2^240, ~200ms mobile)
+    - physics: buildEventPowChallenge(), verifyEventPow() in event-v1.ts
+    - browser: pow-worker.ts (Web Worker, @noble/hashes SHA256), pow.ts (wrapper, fallback to main thread)
+    - CommentBox: "💬mining..." → "💬sending..." → "💬✓" (PoW transparent to user)
+    - coordinator: REQUIRE_EVENT_POW=true → verifies pow_nonce + pow_hash on sats=0 events
+    - event payload: pow_nonce (hex16) + pow_hash (hex64) travel alongside signed event (not signed)
 [ ] Upload shim (MVP)                  POST /upload (multipart) → materializer chunks → returns asset_root
     - metadata events (ANNOUNCE/LIST) always signed client-side
     - returns identical objects to client-side chunking (drop-in swap later)
@@ -664,8 +704,8 @@ DocRef: MVP_PLAN:§The Leaderboard (Step 8), §New User Journey (First Contact)
 
 ### Fortify payment flow (MVP_PLAN:§New User Journey — zero-to-sats)
 
-[x] Fortify UI + payment flow          amount selector + payreq + WebLN/invoice + sign + POST
-[x] WebLN auto-pay (tier 1)            Fortify → WebLN.sendPayment() → sign event → POST → counter updates
+[x] +฿ UI + payment flow               amount selector + payreq + WebLN/invoice + sign + POST
+[x] WebLN auto-pay (tier 1)            +฿ → WebLN.sendPayment() → sign event → POST → 4-pack cycle
 [x] Invoice/URI fallback (tier 2)      no WebLN → lightning: URI link + copy button → poll for settlement
 [ ] QR code display                    render QR from bolt11 (add qrcode library when needed)
 [ ] Wallet guide (tier 3)              no wallet → one-screen guide (Phoenix/Alby). Accept bounce-and-return.

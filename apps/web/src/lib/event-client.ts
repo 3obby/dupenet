@@ -4,6 +4,7 @@
  */
 
 import { signEvent, encodeEventBody, computeEventId } from "./crypto";
+import { mineEventPow, type PowResult } from "./pow";
 
 // Event kind constants (from physics — duplicated to avoid importing physics)
 const EVENT_KIND_FUND = 0x01;
@@ -91,15 +92,16 @@ export async function signUnsignedEvent(
   return signEvent(privateKey, event);
 }
 
-/** Create and sign a POST event (comment). */
+/** Create and sign a POST event (comment) with PoW for spam protection. */
 export async function createPostEvent(
   ref: string,
   text: string,
   privateKey: Uint8Array,
   publicKeyHex: string,
-): Promise<SignedEvent> {
+  onPowStart?: () => void,
+): Promise<SignedEventWithPow> {
   const body = encodeEventBody({ text });
-  return signEvent(privateKey, {
+  const unsigned: UnsignedEvent = {
     v: 1,
     kind: EVENT_KIND_POST,
     from: publicKeyHex,
@@ -107,12 +109,24 @@ export async function createPostEvent(
     body,
     sats: 0,
     ts: Date.now(),
-  });
+  };
+
+  // Mine PoW (Web Worker, ~200ms)
+  if (onPowStart) onPowStart();
+  const pow = await mineEventPow(unsigned);
+
+  const signed = await signEvent(privateKey, unsigned);
+  return { ...signed, pow_nonce: pow.nonceHex, pow_hash: pow.powHash };
+}
+
+export interface SignedEventWithPow extends SignedEvent {
+  pow_nonce?: string;
+  pow_hash?: string;
 }
 
 /** POST a signed event to the coordinator (via API proxy). */
 export async function postEvent(
-  event: SignedEvent,
+  event: SignedEvent | SignedEventWithPow,
 ): Promise<PostEventResult> {
   const res = await fetch("/api/event", {
     method: "POST",

@@ -11,11 +11,13 @@
  *   - decodeEventBody(): hex body → decoded object
  */
 
+import { sha256 } from "@noble/hashes/sha256";
+import { bytesToHex } from "@noble/hashes/utils";
 import type { EventV1 } from "./schemas/event.js";
 import { canonicalEncode, canonicalDecode } from "./canonical.js";
 import { cidFromObject, toHex, fromHex } from "./cid.js";
 import { signEventPayload, verifyEventSignature } from "./event-signature.js";
-import { EVENT_MAX_BODY } from "./constants.js";
+import { EVENT_MAX_BODY, EVENT_POW_TARGET } from "./constants.js";
 
 // ── Zero ref (no reference) ────────────────────────────────────────
 
@@ -114,4 +116,71 @@ export function decodeEventBody(bodyHex: string): unknown {
   if (!bodyHex || bodyHex.length === 0) return {};
   const bytes = fromHex(bodyHex);
   return canonicalDecode(bytes);
+}
+
+// ── Event PoW ─────────────────────────────────────────────────────
+// Free writes (sats=0) require proof-of-work to prevent spam.
+// challenge = SHA256("EV1_POW" || from || ts_be64 || kind_u8 || ref || SHA256(body_bytes))
+// valid if: H(challenge || nonce_be64) < EVENT_POW_TARGET
+
+const EV1_POW_PREFIX = "EV1_POW";
+
+/**
+ * Build the PoW challenge for an event.
+ * Returns 32-byte SHA256 hash used as the mining target input.
+ */
+export function buildEventPowChallenge(
+  event: EventV1 | Omit<EventV1, "sig">,
+): Uint8Array {
+  const enc = new TextEncoder();
+  const prefix = enc.encode(EV1_POW_PREFIX);
+  const fromBytes = fromHex(event.from);
+  const tsBuf = new Uint8Array(8);
+  new DataView(tsBuf.buffer).setBigUint64(0, BigInt(event.ts), false);
+  const kindBuf = new Uint8Array([event.kind]);
+  const refBytes = fromHex(event.ref);
+  const bodyBytes =
+    event.body.length > 0 ? fromHex(event.body) : new Uint8Array(0);
+  const bodyHash = sha256(bodyBytes);
+
+  const total =
+    prefix.length + fromBytes.length + 8 + 1 + refBytes.length + 32;
+  const buf = new Uint8Array(total);
+  let off = 0;
+  buf.set(prefix, off); off += prefix.length;
+  buf.set(fromBytes, off); off += fromBytes.length;
+  buf.set(tsBuf, off); off += 8;
+  buf.set(kindBuf, off); off += 1;
+  buf.set(refBytes, off); off += refBytes.length;
+  buf.set(bodyHash, off);
+
+  return sha256(buf);
+}
+
+/**
+ * Verify event PoW: recompute challenge, hash with nonce, check target.
+ */
+export function verifyEventPow(
+  event: EventV1,
+  nonceHex: string,
+  powHashHex: string,
+  target: bigint = EVENT_POW_TARGET,
+): boolean {
+  if (!/^[0-9a-f]+$/.test(nonceHex) || !/^[0-9a-f]{64}$/.test(powHashHex)) {
+    return false;
+  }
+
+  const challenge = buildEventPowChallenge(event);
+  const nonce = BigInt("0x" + nonceHex);
+  const nonceBuf = new Uint8Array(8);
+  new DataView(nonceBuf.buffer).setBigUint64(0, nonce, false);
+
+  const combined = new Uint8Array(challenge.length + 8);
+  combined.set(challenge, 0);
+  combined.set(nonceBuf, challenge.length);
+
+  const computed = bytesToHex(sha256(combined));
+  if (computed !== powHashHex) return false;
+
+  return BigInt("0x" + powHashHex) < target;
 }

@@ -59,6 +59,7 @@ import {
   verifyEvent,
   computeEventId,
   decodeEventBody,
+  verifyEventPow,
   EVENT_KIND_HOST,
   EVENT_MAX_BODY,
   type EventV1,
@@ -277,6 +278,27 @@ export async function buildApp(deps?: CoordinatorDeps) {
       return reply
         .status(401)
         .send({ error: "invalid_signature", detail: "Ed25519 sig verification failed" });
+    }
+
+    // ── Event PoW verification (spam protection for free writes) ──
+    // If requireEventPow is enabled, sats=0 events must include valid PoW.
+    if (event.sats === 0 && config.requireEventPow) {
+      const { pow_nonce, pow_hash } = req.body as {
+        pow_nonce?: string;
+        pow_hash?: string;
+      };
+      if (!pow_nonce || !pow_hash) {
+        return reply.status(422).send({
+          error: "pow_required",
+          detail: "sats=0 events require pow_nonce + pow_hash",
+        });
+      }
+      if (!verifyEventPow(event, pow_nonce, pow_hash)) {
+        return reply.status(422).send({
+          error: "invalid_pow",
+          detail: "PoW hash does not meet target",
+        });
+      }
     }
 
     // ── Compute event_id ────────────────────────────────────────
@@ -501,6 +523,56 @@ export async function buildApp(deps?: CoordinatorDeps) {
 
     return reply.send({ feed, timestamp: Date.now() });
   });
+
+  // ── Content stats (instrument cluster) ────────────────────────
+  // GET /content/:ref/stats — aggregated stats for a single ref.
+  // Returns pool balance, funder count, host count, runway, recent activity.
+  app.get<{ Params: { ref: string } }>(
+    "/content/:ref/stats",
+    async (req, reply) => {
+      const { ref } = req.params;
+      if (!/^[0-9a-f]{64}$/.test(ref)) {
+        return reply.status(422).send({ error: "invalid_ref" });
+      }
+
+      const EVENT_KIND_FUND = 0x01;
+
+      // Parallel: pool + host count + fund events + recent activity
+      const [pool, hostCount, fundEvents, recentEvents] = await Promise.all([
+        prisma.bountyPool.findUnique({ where: { poolKey: ref } }),
+        prisma.hostServe.count({ where: { cid: ref } }),
+        prisma.protocolEvent.findMany({
+          where: { ref, kind: EVENT_KIND_FUND },
+          select: { from: true, sats: true },
+        }),
+        prisma.protocolEvent.findMany({
+          where: { ref },
+          orderBy: { ts: "desc" },
+          take: 8,
+          select: { from: true, sats: true, ts: true, kind: true },
+        }),
+      ]);
+
+      const balance = Number(pool?.balance ?? 0n);
+      const totalFunded = fundEvents.reduce((sum, e) => sum + e.sats, 0);
+      const uniqueFroms = new Set(fundEvents.map((e) => e.from));
+      const funderCount = uniqueFroms.size;
+
+      return reply.send({
+        balance,
+        total_funded: totalFunded,
+        funder_count: funderCount,
+        host_count: hostCount,
+        last_payout_epoch: pool?.lastPayoutEpoch ?? 0,
+        recent: recentEvents.map((e) => ({
+          from: e.from,
+          sats: e.sats,
+          ts: Number(e.ts),
+          kind: e.kind,
+        })),
+      });
+    },
+  );
 
   // ── Host registration ──────────────────────────────────────────
   app.post("/host/register", async (req, reply) => {

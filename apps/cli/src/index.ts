@@ -43,18 +43,18 @@ program
 
 program
   .command("upload")
-  .description("Upload a file: chunk → PUT blocks → PUT file → PUT asset → announce → print URL")
-  .argument("<file>", "Path to file to upload")
+  .description("Upload a file or directory → announce → print asset_root (dir: + LIST event)")
+  .argument("<path>", "File or directory to upload")
   .option("-g, --gateway <url>", "Gateway URL override")
   .option("-c, --coordinator <url>", "Coordinator URL override")
   .option("--title <title>", "Content title (default: filename)")
   .option("--tags <tags>", "Comma-separated tags")
   .option("--access <mode>", "Access mode: open|paid (default: paid)")
-  .action(async (file: string, opts: { gateway?: string; coordinator?: string; title?: string; tags?: string; access?: string }) => {
+  .action(async (path: string, opts: { gateway?: string; coordinator?: string; title?: string; tags?: string; access?: string }) => {
     const config = await loadConfig();
     if (opts.gateway) config.gateway = opts.gateway;
     if (opts.coordinator) config.coordinator = opts.coordinator;
-    await uploadCommand(file, config, { title: opts.title, tags: opts.tags, access: opts.access });
+    await uploadCommand(path, config, { title: opts.title, tags: opts.tags, access: opts.access });
   });
 
 // ── fetch ───────────────────────────────────────────────────────────

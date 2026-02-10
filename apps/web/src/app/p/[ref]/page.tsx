@@ -1,10 +1,11 @@
 import {
-  getPool,
+  getContentStats,
   getDirectory,
   getEpochSummary,
   fmtSats,
   shortHex,
 } from "@/lib/api";
+import { CopyButton } from "@/components/CopyButton";
 
 export const revalidate = 30;
 
@@ -18,14 +19,11 @@ export default async function ProofPage({
     return <p>invalid ref</p>;
   }
 
-  // Fetch pool, hosts, and recent epoch proofs in parallel
-  const [pool, hosts] = await Promise.all([
-    getPool(ref),
+  const [stats, hosts] = await Promise.all([
+    getContentStats(ref),
     getDirectory(),
   ]);
 
-  // Get recent epoch summaries (last 6 epochs ≈ 24h)
-  // We'd need to know the current epoch — estimate from timestamp
   const nowMs = Date.now();
   const epochLengthMs = 4 * 60 * 60_000;
   const currentEpoch = Math.floor(nowMs / epochLengthMs);
@@ -41,37 +39,56 @@ export default async function ProofPage({
     }
   }
 
-  // Find hosts that serve this ref
-  // (We don't have a direct lookup — show all TRUSTED hosts)
   const trustedHosts = hosts.filter((h) => h.status === "TRUSTED");
 
   return (
     <>
-      <a href="/">&larr;</a>
-      {" | "}
-      <a href={`/v/${ref}`}>view</a>
+      <a href="/">{"\u25c0"}</a>
+      {" \u00b7 "}
+      <a href={`/v/${ref}`}>{"\u25c0"}</a>
       <hr />
-      <b>proof</b>
-      <br />
+
       <pre>{ref}</pre>
-      <span className="t">sha256 verified on ingest</span>
+      <span className="t">sha256</span>
+      {" \u00b7 "}
+      <CopyButton text={ref} label="hash" />
+      {" \u00b7 "}
+      <CopyButton text={`/p/${ref}`} label="url" />
+      {" \u00b7 "}
+      <a href={`/api/evidence/${ref}`} download>{"\u2913"}json</a>
+
       <hr />
-      {/* Pool */}
-      <b>{fmtSats(pool.balance)}</b> sat in pool
-      {pool.last_payout_epoch > 0 && (
-        <span className="t"> | last payout epoch {pool.last_payout_epoch}</span>
-      )}
+
+      <div className="cluster">
+        <span>
+          <b>{"\u0e3f"}{fmtSats(stats.balance)}</b>
+        </span>
+        {stats.funder_count > 0 && (
+          <span>
+            {"\ud80c\udc20"}{stats.funder_count}
+          </span>
+        )}
+        <span>
+          {"\ud83d\udcbf"}{stats.host_count}
+        </span>
+        {stats.last_payout_epoch > 0 && (
+          <span className="t">
+            {"\u21bb"}{stats.last_payout_epoch}
+          </span>
+        )}
+      </div>
+
       <hr />
-      {/* Hosts */}
-      <b>hosts</b> ({trustedHosts.length} trusted)
+
+      <span className="t">{"\ud83d\udcbf"}{trustedHosts.length}</span>
       {trustedHosts.length === 0 ? (
-        <p className="t">no trusted hosts</p>
+        <p className="t">-</p>
       ) : (
         <table>
           <thead>
             <tr>
               <th>endpoint</th>
-              <th>pubkey</th>
+              <th>pk</th>
               <th className="r">score</th>
             </tr>
           </thead>
@@ -86,20 +103,21 @@ export default async function ProofPage({
           </tbody>
         </table>
       )}
+
       <hr />
-      {/* Epoch Proofs */}
-      <b>epoch proofs</b> ({epochProofs.length})
+
+      <span className="t">{"\u2713"}{epochProofs.length}</span>
       {epochProofs.length === 0 ? (
-        <p className="t">no epoch proofs found</p>
+        <p className="t">-</p>
       ) : (
         <table>
           <thead>
             <tr>
               <th className="r">epoch</th>
               <th>host</th>
-              <th className="r">receipts</th>
-              <th className="r">clients</th>
-              <th className="r">reward sat</th>
+              <th className="r">rcpt</th>
+              <th className="r">clt</th>
+              <th className="r">{"\u0e3f"}</th>
             </tr>
           </thead>
           <tbody>
