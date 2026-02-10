@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# init-lnd.sh — Automatically create LND wallet and configure auto-unlock.
+# init-lnd.sh — Automatically create LND wallet via REST API + configure auto-unlock.
 # Run once after first `docker compose up`. Idempotent (skips if wallet exists).
 #
 # Usage: bash scripts/init-lnd.sh [compose-file] [env-file]
@@ -17,38 +17,34 @@ echo "=== LND wallet initialization ==="
 # Check if wallet already exists (macaroon present = wallet created)
 if dc exec -T "$LND_SERVICE" test -f "/root/.lnd/data/chain/bitcoin/${NETWORK}/admin.macaroon" 2>/dev/null; then
   echo "Wallet already exists — skipping creation."
-  # Ensure auto-unlock is configured
-  if dc exec -T "$LND_SERVICE" test -f "/root/.lnd/wallet_password" 2>/dev/null; then
-    if ! grep -q "LND_WALLET_PW_FILE" "$ENV_FILE" 2>/dev/null; then
+  if ! grep -q "LND_WALLET_PW_FILE" "$ENV_FILE" 2>/dev/null; then
+    if dc exec -T "$LND_SERVICE" test -f "/root/.lnd/wallet_password" 2>/dev/null; then
       echo "LND_WALLET_PW_FILE=/root/.lnd/wallet_password" >> "$ENV_FILE"
-      echo "  Added LND_WALLET_PW_FILE to $ENV_FILE. Restart LND to enable auto-unlock."
+      echo "  Added LND_WALLET_PW_FILE to $ENV_FILE."
     fi
-    echo "Auto-unlock configured. Done."
-  else
-    echo "Warning: no wallet_password file. LND will require manual unlock on restart."
   fi
+  echo "Done."
   exit 0
 fi
 
-# Ensure LND is running (without wallet-unlock-password-file for first boot)
+# Ensure LND is running without wallet-unlock-password-file
 echo "Starting LND for wallet creation..."
-# Remove LND_WALLET_PW_FILE if set (so LND starts without it)
-if grep -q "LND_WALLET_PW_FILE" "$ENV_FILE" 2>/dev/null; then
-  grep -v "LND_WALLET_PW_FILE" "$ENV_FILE" > "${ENV_FILE}.tmp" && mv "${ENV_FILE}.tmp" "$ENV_FILE"
-fi
+grep -v "LND_WALLET_PW_FILE" "$ENV_FILE" > "${ENV_FILE}.tmp" 2>/dev/null && mv "${ENV_FILE}.tmp" "$ENV_FILE" || true
 dc up -d "$LND_SERVICE"
 
-# Wait for LND RPC to be ready
-echo "Waiting for LND to accept RPC..."
+# Wait for LND REST API to be reachable (it serves /v1/state even without wallet)
+echo "Waiting for LND REST API..."
 for i in $(seq 1 90); do
-  STATE=$(dc exec -T "$LND_SERVICE" lncli --network="$NETWORK" state 2>&1 || true)
-  if echo "$STATE" | grep -q "NON_EXISTING\|WAITING_TO_START"; then
-    echo "  LND ready for wallet creation (attempt $i)."
+  STATE=$(dc exec -T "$LND_SERVICE" \
+    wget -q -O - --no-check-certificate https://localhost:8080/v1/state 2>/dev/null || true)
+  if echo "$STATE" | grep -q "NON_EXISTING\|WAITING"; then
+    echo "  LND REST API ready (attempt $i)."
     break
   fi
   if [ "$i" -eq 90 ]; then
-    echo "Error: LND did not become ready in time."
-    echo "Last output: $STATE"
+    echo "Error: LND REST API did not become ready."
+    echo "  Last: $STATE"
+    dc logs --tail=10 "$LND_SERVICE"
     exit 1
   fi
   sleep 2
@@ -56,48 +52,68 @@ done
 
 # Generate wallet password
 WALLET_PASS=$(openssl rand -base64 24 | tr -d '/+=' | head -c 24)
+WALLET_PASS_B64=$(echo -n "$WALLET_PASS" | base64)
 
-# Write password file into the LND container volume
-dc exec -T "$LND_SERVICE" sh -c "echo '${WALLET_PASS}' > /root/.lnd/wallet_password && chmod 600 /root/.lnd/wallet_password"
-echo "  Password file written."
+# Create wallet via REST API (POST /v1/genseed then POST /v1/initwallet)
+echo "Generating seed..."
+SEED_RESP=$(dc exec -T "$LND_SERVICE" \
+  wget -q -O - --no-check-certificate --post-data='{}' \
+  https://localhost:8080/v1/genseed 2>/dev/null)
 
-# Create wallet — pipe: password, confirm, no existing seed, no passphrase, confirm empty
+# Extract mnemonic words from JSON
+MNEMONIC=$(echo "$SEED_RESP" | grep -o '"cipher_seed_mnemonic":\[[^]]*\]' | \
+  sed 's/"cipher_seed_mnemonic":\[//;s/\]//;s/"//g;s/,/ /g')
+
+if [ -z "$MNEMONIC" ]; then
+  echo "Error: Failed to generate seed."
+  echo "Response: $SEED_RESP"
+  exit 1
+fi
+
+# Build JSON array from mnemonic
+MNEMONIC_JSON=$(echo "$SEED_RESP" | grep -o '"cipher_seed_mnemonic":\[[^]]*\]' | \
+  sed 's/"cipher_seed_mnemonic"://')
+
 echo "Creating wallet..."
-SEED_OUTPUT=$(printf '%s\n%s\nn\n\n' "$WALLET_PASS" "$WALLET_PASS" | \
-  dc exec -T "$LND_SERVICE" lncli --network="$NETWORK" create 2>&1) || true
+INIT_RESP=$(dc exec -T "$LND_SERVICE" \
+  wget -q -O - --no-check-certificate \
+  --header='Content-Type: application/json' \
+  --post-data="{\"wallet_password\":\"${WALLET_PASS_B64}\",\"cipher_seed_mnemonic\":${MNEMONIC_JSON}}" \
+  https://localhost:8080/v1/initwallet 2>/dev/null) || true
+
+# Write password file into LND volume
+dc exec -T "$LND_SERVICE" sh -c "echo '${WALLET_PASS}' > /root/.lnd/wallet_password && chmod 600 /root/.lnd/wallet_password"
 
 echo ""
 echo "============================================================"
-echo "LND WALLET CREATED"
+echo "LND WALLET CREATED — SAVE THIS SECURELY"
 echo "============================================================"
 echo ""
 echo "Wallet password: $WALLET_PASS"
 echo ""
-echo "$SEED_OUTPUT"
+echo "Seed phrase:"
+echo "  $MNEMONIC"
 echo ""
 echo "============================================================"
-echo "SAVE THE SEED PHRASE AND PASSWORD ABOVE — NEVER SHARE THEM"
-echo "============================================================"
 
-# Enable auto-unlock for future restarts
-echo "LND_WALLET_PW_FILE=/root/.lnd/wallet_password" >> "$ENV_FILE"
-echo ""
-echo "  Auto-unlock enabled in $ENV_FILE"
-
-# Wait for macaroon to appear
+# Wait for macaroon
 echo "Waiting for wallet to initialize..."
 for i in $(seq 1 30); do
   if dc exec -T "$LND_SERVICE" test -f "/root/.lnd/data/chain/bitcoin/${NETWORK}/admin.macaroon" 2>/dev/null; then
-    echo "  Wallet initialized (macaroon exists)."
+    echo "  Wallet initialized."
     break
   fi
   sleep 2
 done
 
-# Restart LND with auto-unlock, then bring up dependent services
+# Enable auto-unlock for future restarts
+echo "LND_WALLET_PW_FILE=/root/.lnd/wallet_password" >> "$ENV_FILE"
+
+# Restart full stack with auto-unlock
 echo "Restarting stack with auto-unlock..."
 dc up -d
 
 echo ""
-echo "=== Done. Stack starting with LND auto-unlock. ==="
-echo "  Run: docker compose -f $COMPOSE_FILE logs -f"
+echo "=== Done ==="
+echo "  LND wallet created with auto-unlock."
+echo "  SAVE the seed phrase and password above."
