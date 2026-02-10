@@ -17,6 +17,7 @@
     "db:generate": "prisma generate"
   },
   "dependencies": {
+    "@dupenet/lnd-client": "*",
     "@dupenet/physics": "*",
     "@dupenet/receipt-sdk": "*",
     "@prisma/client": "^6.3.1",

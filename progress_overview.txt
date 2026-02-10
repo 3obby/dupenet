@@ -279,7 +279,7 @@ Plan constants still missing from code (add during relevant sprint):
 [x] /v/[ref] Content                  metadata + stats + thread — from GET /events + /bounty + /thread
 [x] /c/[ref] Collection               list items with per-item pool balances — from GET /events + /bounty
 [x] /p/[ref] Proof                    hash, pool, hosts, epoch proofs — from /bounty + /directory + /epoch/summary
-    Total: 228/228 tests pass + Next.js build clean (4 pages + API route, server + client components)
+    Total: 228/228 tests pass + Next.js build clean (4 pages + 3 API routes, server + client components)
 
 ## Sprint 7c Implementation (2026-02-09)
 
@@ -628,22 +628,31 @@ DocRef: MVP_PLAN:§The Leaderboard (Step 8), §New User Journey (First Contact)
 [x] Fortify button                     amount selector (21/210/2100/custom) → sign FUND event → POST
     - src/components/FortifyButton.tsx: "use client", amount picker, status feedback
     - on /v/<ref> content page: [fortify] link → amount selector → send → "funded" → refresh
-    - MVP: sats trusted (no payment verification). TODO: payment-intent binding.
+    - full payment flow: payreq → WebLN auto-pay → invoice fallback → sign + POST
 [x] Comment box                         text input → sign POST event (kind=0x03) → POST
     - src/components/CommentBox.tsx: "use client", textarea, status feedback
     - ref = root event_id (ANNOUNCE or content ref), thread appears after refresh
-[x] API proxy route                     POST /api/event → coordinator POST /event
-    - src/app/api/event/route.ts: keeps coordinator URL server-side, no CORS needed
+[x] API proxy routes                    POST /api/event, POST /api/payreq, GET /api/payreq/:hash
+    - keeps coordinator URL server-side, no CORS needed
 [x] Page integration                    IdentityChip on leaderboard, FortifyButton + CommentBox on /v/<ref>
     - layout.tsx: KeyProvider wraps all pages
     - page.tsx: IdentityChip in header (float right)
     - v/[ref]/page.tsx: FortifyButton + CommentBox below content
+[x] Payment-intent binding              POST /payreq { sats, event_hash } → LN invoice bound to event
+    - coordinator: POST /payreq creates invoice via LndClient, stores in PaymentStore (10-min TTL)
+    - coordinator: GET /payreq/:payment_hash polls LND for settlement status
+    - coordinator: POST /event verifies payment (lookupInvoice) before crediting pool
+    - dev mode (no LND): sats trusted without payment — sufficient at founder scale
+    - web: FortifyButton handles 3 tiers:
+      1. WebLN auto-pay (window.webln.sendPayment) → instant
+      2. Invoice string + lightning: URI link → manual pay → poll for settlement
+      3. Dev mode bypass (no invoice, direct sign + POST)
+    - src/lib/webln.ts: WebLN type declarations, hasWebLN(), payWithWebLN()
+    - apps/coordinator/src/views/payment-store.ts: in-memory store (dual-keyed by event_hash + payment_hash)
 [ ] Event PoW (Web Worker)             free writes: PoW in Web Worker, never block UI, "publishing..." spinner
     - challenge = SHA256("EV1_POW" || from || ts || kind || ref || SHA256(body))
     - find nonce where H(challenge || nonce) < EVENT_POW_TARGET (~200ms mobile)
     - distinct from receipt PoW (different prefix, different purpose)
-[ ] Payment-intent binding              POST /payreq { sats, event_hash } → invoice with event_hash in memo
-    - materializer rejects events whose hash doesn't match paid invoice
 [ ] Upload shim (MVP)                  POST /upload (multipart) → materializer chunks → returns asset_root
     - metadata events (ANNOUNCE/LIST) always signed client-side
     - returns identical objects to client-side chunking (drop-in swap later)
@@ -655,9 +664,10 @@ DocRef: MVP_PLAN:§The Leaderboard (Step 8), §New User Journey (First Contact)
 
 ### Fortify payment flow (MVP_PLAN:§New User Journey — zero-to-sats)
 
-[~] Fortify UI (MVP — trusted sats)    amount selector + sign + POST. No payment verification yet.
-[ ] WebLN auto-pay (tier 1)            Fortify → WebLN pays → counter increments. Requires /payreq endpoint.
-[ ] QR/invoice fallback (tier 2)       no WebLN → QR code + invoice string → scan in wallet app
+[x] Fortify UI + payment flow          amount selector + payreq + WebLN/invoice + sign + POST
+[x] WebLN auto-pay (tier 1)            Fortify → WebLN.sendPayment() → sign event → POST → counter updates
+[x] Invoice/URI fallback (tier 2)      no WebLN → lightning: URI link + copy button → poll for settlement
+[ ] QR code display                    render QR from bolt11 (add qrcode library when needed)
 [ ] Wallet guide (tier 3)              no wallet → one-screen guide (Phoenix/Alby). Accept bounce-and-return.
 [ ] Fortify abandonment tracking        measure clicks → completions per tier. Fiat bridge trigger: >60% abandon.
 

@@ -6,6 +6,8 @@
  *       epoch aggregation, pin contracts, audits.
  *
  * Routes:
+ *   POST /payreq          — create Lightning invoice for a funded event (payment-intent binding)
+ *   GET  /payreq/:hash    — check payment status (client polling)
  *   POST /event           — unified event ingest (EventV1 envelope)
  *   GET  /events          — generic event query (by ref, kind, from, since)
  *   GET  /feed/funded     — pool keys ranked by balance + ANNOUNCE metadata
@@ -30,6 +32,7 @@
 
 import { fileURLToPath } from "node:url";
 import { resolve } from "node:path";
+import { existsSync } from "node:fs";
 import Fastify from "fastify";
 import { PrismaClient } from "@prisma/client";
 import { config } from "./config.js";
@@ -75,10 +78,29 @@ import {
   type SpotCheckFetcher,
 } from "./views/availability.js";
 import { computeAvailabilityScore } from "@dupenet/physics";
+import { LndRestClient, type LndClient } from "@dupenet/lnd-client";
+import { PaymentStore } from "./views/payment-store.js";
+
+/** Try to create a real LND REST client from config, or return null (dev mode). */
+function createLndClient(): LndClient | null {
+  if (!config.lndHost || !config.lndMacaroonPath) return null;
+  if (!existsSync(config.lndMacaroonPath)) {
+    console.warn(
+      `[coordinator] LND macaroon not found at ${config.lndMacaroonPath} — dev mode (sats trusted)`,
+    );
+    return null;
+  }
+  return new LndRestClient({
+    host: config.lndHost,
+    macaroonPath: config.lndMacaroonPath,
+    tlsCertPath: config.lndTlsCertPath,
+  });
+}
 
 export interface CoordinatorDeps {
   prisma?: PrismaClient;
   spotCheckFetcher?: SpotCheckFetcher;
+  lndClient?: LndClient | null;
 }
 
 export async function buildApp(deps?: CoordinatorDeps) {
@@ -90,9 +112,127 @@ export async function buildApp(deps?: CoordinatorDeps) {
   const prisma = deps?.prisma ?? new PrismaClient();
   const app = Fastify({ logger: true });
 
+  // LND client for payment verification (null = dev mode, sats trusted)
+  const lndClient =
+    deps?.lndClient !== undefined ? deps.lndClient : createLndClient();
+  const paymentStore = new PaymentStore();
+
+  // Periodic cleanup of expired payment requests (every 60s)
+  const paymentCleanup = setInterval(() => paymentStore.cleanup(), 60_000);
+
   // Disconnect Prisma on shutdown
   app.addHook("onClose", async () => {
+    clearInterval(paymentCleanup);
     await prisma.$disconnect();
+  });
+
+  if (lndClient) {
+    app.log.info("LND configured — payment verification enabled for funded events");
+  } else {
+    app.log.info("LND not configured — dev mode (funded events accepted without payment)");
+  }
+
+  // ── Payment Request (Fortify payment flow) ──────────────────────
+  // POST /payreq — create a Lightning invoice bound to an event_hash.
+  // DocRef: MVP_PLAN:§Client Interaction Model (payment-intent binding)
+  app.post("/payreq", async (req, reply) => {
+    const { sats, event_hash } = req.body as {
+      sats: number;
+      event_hash: string;
+    };
+
+    // Validate inputs
+    if (!Number.isInteger(sats) || sats <= 0) {
+      return reply.status(422).send({ error: "invalid_sats" });
+    }
+    if (!/^[0-9a-f]{64}$/.test(event_hash)) {
+      return reply
+        .status(422)
+        .send({ error: "invalid_event_hash", detail: "must be 64 hex chars" });
+    }
+
+    // Dev mode: no LND, sats trusted
+    if (!lndClient) {
+      return reply.send({ dev_mode: true, event_hash });
+    }
+
+    // Check for duplicate (same event_hash already pending)
+    const existing = paymentStore.getByEventHash(event_hash);
+    if (existing) {
+      return reply.send({
+        invoice: existing.bolt11,
+        payment_hash: existing.paymentHash,
+        expires_at: Math.floor(existing.expiresAt / 1000),
+      });
+    }
+
+    // Create Lightning invoice
+    let invoice;
+    try {
+      invoice = await lndClient.createInvoice({
+        valueSats: sats,
+        memo: `fortify:${event_hash.slice(0, 16)}`,
+        expirySecs: 600,
+      });
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : "lnd_error";
+      return reply
+        .status(503)
+        .send({ error: "lnd_unavailable", detail: msg });
+    }
+
+    const record = paymentStore.set(
+      event_hash,
+      invoice.paymentHash,
+      invoice.bolt11,
+      sats,
+    );
+
+    return reply.send({
+      invoice: invoice.bolt11,
+      payment_hash: invoice.paymentHash,
+      expires_at: Math.floor(record.expiresAt / 1000),
+    });
+  });
+
+  // GET /payreq/:payment_hash — check payment status (polling).
+  app.get("/payreq/:payment_hash", async (req, reply) => {
+    const { payment_hash } = req.params as { payment_hash: string };
+
+    if (!/^[0-9a-f]{64}$/.test(payment_hash)) {
+      return reply.status(422).send({ error: "invalid_payment_hash" });
+    }
+
+    const record = paymentStore.getByPaymentHash(payment_hash);
+    if (!record) {
+      return reply.status(404).send({ error: "not_found" });
+    }
+
+    // If LND is configured, check settlement status
+    if (lndClient) {
+      try {
+        const info = await lndClient.lookupInvoice(payment_hash);
+        return reply.send({
+          settled: info.settled,
+          state: info.state,
+          event_hash: record.eventHash,
+          sats: record.sats,
+        });
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : "lnd_error";
+        return reply
+          .status(503)
+          .send({ error: "lnd_unavailable", detail: msg });
+      }
+    }
+
+    // Dev mode: report as settled
+    return reply.send({
+      settled: true,
+      state: "SETTLED",
+      event_hash: record.eventHash,
+      sats: record.sats,
+    });
   });
 
   // ── EventV1 Unified Ingest ────────────────────────────────────
@@ -141,6 +281,48 @@ export async function buildApp(deps?: CoordinatorDeps) {
 
     // ── Compute event_id ────────────────────────────────────────
     const eventId = computeEventId(event);
+
+    // ── Payment verification (if LND configured) ─────────────────
+    // For funded events (sats > 0), verify Lightning payment before crediting pool.
+    // Dev mode (no LND): sats trusted without payment — sufficient at founder scale.
+    if (event.sats > 0 && lndClient) {
+      const payreq = paymentStore.getByEventHash(eventId);
+      if (!payreq) {
+        return reply.status(402).send({
+          error: "payment_required",
+          detail: "POST /payreq first, pay the invoice, then POST /event",
+        });
+      }
+      if (payreq.sats !== event.sats) {
+        return reply.status(422).send({
+          error: "sats_mismatch",
+          detail: `payreq.sats=${payreq.sats} != event.sats=${event.sats}`,
+        });
+      }
+      try {
+        const info = await lndClient.lookupInvoice(payreq.paymentHash);
+        if (!info.settled) {
+          return reply.status(402).send({
+            error: "payment_not_settled",
+            detail: `invoice state: ${info.state}`,
+            payment_hash: payreq.paymentHash,
+          });
+        }
+        if (info.amtPaidSats < event.sats) {
+          return reply.status(402).send({
+            error: "payment_insufficient",
+            detail: `paid ${info.amtPaidSats} < required ${event.sats}`,
+          });
+        }
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : "lnd_error";
+        return reply
+          .status(503)
+          .send({ error: "lnd_unavailable", detail: msg });
+      }
+      // Payment verified — consume the payment request (single-use)
+      paymentStore.delete(payreq.paymentHash);
+    }
 
     // ── Pool credit rule ────────────────────────────────────────
     // if event.sats > 0: credit pool[event.ref] += sats (minus royalty)

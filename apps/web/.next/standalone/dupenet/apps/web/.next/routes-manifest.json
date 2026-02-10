@@ -20,6 +20,14 @@
   },
   "dynamicRoutes": [
     {
+      "page": "/api/payreq/[hash]",
+      "regex": "^/api/payreq/([^/]+?)(?:/)?$",
+      "routeKeys": {
+        "nxtPhash": "nxtPhash"
+      },
+      "namedRegex": "^/api/payreq/(?<nxtPhash>[^/]+?)(?:/)?$"
+    },
+    {
       "page": "/c/[ref]",
       "regex": "^/c/([^/]+?)(?:/)?$",
       "routeKeys": {

@@ -23,4 +23,12 @@ export const config = {
   epochSchedulerSpotChecks: env("EPOCH_SCHEDULER_SPOT_CHECKS", "true") === "true",
   /** Protocol genesis timestamp (ms). 0 = Unix epoch. Override for testing. */
   genesisTimestampMs: parseInt(env("GENESIS_TIMESTAMP_MS", "0"), 10),
+
+  // ── LND (optional — enables payment verification for funded events) ──
+  /** LND REST host:port. Empty = dev mode (sats trusted without payment). */
+  lndHost: env("LND_HOST", ""),
+  /** Path to LND macaroon file. Empty = dev mode. */
+  lndMacaroonPath: env("LND_MACAROON_PATH", ""),
+  /** Path to LND TLS cert file. Empty = skip TLS verification (regtest). */
+  lndTlsCertPath: env("LND_TLS_CERT_PATH", ""),
 } as const;

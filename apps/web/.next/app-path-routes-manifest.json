@@ -1,8 +1,10 @@
 {
+  "/api/payreq/route": "/api/payreq",
+  "/api/payreq/[hash]/route": "/api/payreq/[hash]",
   "/api/event/route": "/api/event",
   "/_not-found/page": "/_not-found",
   "/v/[ref]/page": "/v/[ref]",
+  "/page": "/",
   "/p/[ref]/page": "/p/[ref]",
-  "/c/[ref]/page": "/c/[ref]",
-  "/page": "/"
+  "/c/[ref]/page": "/c/[ref]"
 }
