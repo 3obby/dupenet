@@ -74,6 +74,8 @@ ocdn.is {
     reverse_proxy gateway:3100
   }
 
-  # ── Default ─────────────────────────────────────────────────
-  respond "ocdn.is — content that can't be killed" 200
+  # ── Web UI (Next.js — leaderboard, content, proof pages) ────
+  handle {
+    reverse_proxy web:3200
+  }
 }

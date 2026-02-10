@@ -131,6 +131,28 @@ services:
       timeout: 5s
       retries: 5
 
+  # ── Web UI (Next.js leaderboard + content pages) ───────────────
+  web:
+    build:
+      context: ..
+      dockerfile: apps/web/Dockerfile
+    restart: unless-stopped
+    environment:
+      PORT: "3200"
+      COORDINATOR_URL: http://coordinator:3102
+      GATEWAY_URL: http://gateway:3100
+      NEXT_PUBLIC_SITE_URL: https://ocdn.is
+    depends_on:
+      coordinator:
+        condition: service_healthy
+      gateway:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "wget", "-q", "--spider", "http://127.0.0.1:3200"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+
   # ── Caddy (reverse proxy + automatic HTTPS) ────────────────────
   caddy:
     image: caddy:2-alpine
@@ -146,6 +168,8 @@ services:
       gateway:
         condition: service_healthy
       coordinator:
+        condition: service_healthy
+      web:
         condition: service_healthy
 
 volumes:
