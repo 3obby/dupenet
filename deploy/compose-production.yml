@@ -44,6 +44,7 @@ services:
     restart: unless-stopped
     environment:
       GATEWAY_PORT: "3100"
+      GATEWAY_HOST: "0.0.0.0"
       BLOCK_STORE_PATH: /data/blocks
       LND_HOST: lnd:8080
       LND_TLS_CERT_PATH: /lnd/tls.cert
@@ -75,6 +76,7 @@ services:
     restart: unless-stopped
     environment:
       MINT_PORT: "3101"
+      MINT_HOST: "0.0.0.0"
       MINT_PRIVATE_KEY_HEX: ${MINT1_SK_HEX}
       LND_HOST: lnd:8080
       LND_TLS_CERT_PATH: /lnd/tls.cert
@@ -98,6 +100,7 @@ services:
     restart: unless-stopped
     environment:
       COORDINATOR_PORT: "3102"
+      COORDINATOR_HOST: "0.0.0.0"
       DATABASE_URL: postgresql://${PG_USER:-ocdn}:${PG_PASS:-ocdn_prod_2026}@postgres:5432/${PG_DB:-ocdn}
       MINT_PUBKEYS: ${MINT_PUBKEYS}
       EPOCH_SCHEDULER_INTERVAL_MS: "60000"
