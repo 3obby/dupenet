@@ -5,17 +5,20 @@ WORKDIR /app
 COPY package.json package-lock.json ./
 COPY packages/physics/package.json packages/physics/
 COPY packages/receipt-sdk/package.json packages/receipt-sdk/
+COPY packages/lnd-client/package.json packages/lnd-client/
 COPY apps/coordinator/package.json apps/coordinator/
 
 RUN npm ci --workspace=@dupenet/coordinator
 
 COPY packages/physics/ packages/physics/
 COPY packages/receipt-sdk/ packages/receipt-sdk/
+COPY packages/lnd-client/ packages/lnd-client/
 COPY apps/coordinator/ apps/coordinator/
 COPY tsconfig.base.json .
 
 RUN npm run build --workspace=@dupenet/physics
 RUN npm run build --workspace=@dupenet/receipt-sdk
+RUN npm run build --workspace=@dupenet/lnd-client
 RUN npx prisma generate --schema=apps/coordinator/prisma/schema.prisma
 RUN npm run build --workspace=@dupenet/coordinator
 
