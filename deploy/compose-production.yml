@@ -20,7 +20,6 @@ services:
       --bitcoin.node=neutrino
       --neutrino.addpeer=x49.seed.signet.bitcoin.sprovoost.nl
       --neutrino.addpeer=v7ajjeirttkbnt32wpy3c6w3emwnfr3fkla7hpxcfokez3ez253rvid.onion:38333
-      --neutrino.feeurl=https://nodes.lightning.computer/fees/v1/btc-fee-estimates.json
       --rpclisten=0.0.0.0:10009
       --restlisten=0.0.0.0:8080
       --tlsextradomain=lnd
