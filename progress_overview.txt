@@ -343,17 +343,20 @@ DocRef: MVP_PLAN:§Node Kit, §What Hosts vs What You Host, §Bootstrap Sequence
 
 [x] VPS provisioning                    FlokiNET Romania (4 CPU, 4GB RAM, 90GB NVMe, 9TB BW, DDoS prot.)
 [x] Domain acquired                     ocdn.is (ISNIC Iceland — ccTLD, seizure-proof, WHOIS privacy)
-[~] DNS A record                        ocdn.is → 185.165.169.8 (pending ISNIC activation)
-[x] compose-production.yml              signet LND, hardened Postgres, restart policies, no regtest services
+[x] DNS A record                        ocdn.is → 185.165.169.8 (live, propagated)
+[x] compose-production.yml              signet LND (neutrino), hardened Postgres, restart policies, 0.0.0.0 binding
 [x] Caddyfile.production                ocdn.is domain, automatic HTTPS via Caddy/Let's Encrypt
 [x] scripts/deploy.sh                   one-shot server setup (Docker, git, keys, firewall)
 [x] scripts/backup.sh                   Postgres dump + LND SCB, 14-day retention, cron-ready
+[x] scripts/init-lnd.sh                 automated wallet creation via REST API + auto-unlock config
 [x] .env.example updated                production DB creds, signet macaroon paths, ocdn.is endpoint
-[ ] Server access                       VPS provisioned, awaiting Proxmox lock clear (FlokiNET support)
-[ ] Docker + stack deploy               deploy.sh → compose-production.yml up
-[ ] LND signet wallet                   create wallet, fund via signet faucet, open channel
-    - decision: signet first, flip to mainnet when confident
-[ ] Mint 1 operational                  co-located on founder VPS (Romania)
+[x] Server access                       SSH key auth, passwordless sudo, UFW (22/80/443/9735)
+[x] Docker + stack deploy               all 6 containers healthy: caddy, gateway, mint1, coordinator, lnd, postgres
+[x] LND signet wallet                   created via REST API, auto-unlock configured, neutrino synced
+[x] HTTPS live                          https://ocdn.is/health → OK, Let's Encrypt cert auto-provisioned
+[x] Mint 1 operational                  co-located on founder VPS (Romania), signing receipts
+[x] Coordinator operational             epoch scheduler running, Postgres persisting
+[ ] LND signet funding                  fund via signet faucet, open channel to well-connected node
 [ ] Mint 2 (remote)                     separate VPS in Malaysia (Shinjiru) or Switzerland (COIN.HOST)
 [ ] Mint 3 (remote)                     third jurisdiction — add before public announcement
 [ ] Seed content upload                 founder uploads Tier 1 + Tier 2 content via CLI
