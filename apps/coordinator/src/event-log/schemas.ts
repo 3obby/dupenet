@@ -39,3 +39,4 @@ export const HOST_UNBOND_EVENT = "host.unbond.v1" as const;
 export const RECEIPT_SUBMIT_EVENT = "receipt.submit.v1" as const;
 export const EPOCH_SUMMARY_EVENT = "epoch.summary.v1" as const;
 export const REFUSAL_EVENT = "refusal.v1" as const;
+export const PROTOCOL_EVENT = "event.v1" as const;

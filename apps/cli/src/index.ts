@@ -3,9 +3,11 @@
  * dupenet CLI — the minimum tool for a human to use the protocol.
  *
  * Commands:
- *   upload <file>           Chunk + upload → print asset_root URL
+ *   upload <file>           Chunk + upload + announce → print asset_root URL
  *   fetch <cid> [-o file]   Resolve + download → write file
- *   tip <cid> <sats>        Sign tip → credit bounty pool
+ *   fund <ref> <sats>       Fund any ref → POST /event kind=FUND
+ *   post <ref> <text>       Threaded reply → POST /event kind=POST
+ *   tip <cid> <sats>        Sign tip → credit bounty pool (legacy shim)
  *   keygen                  Generate Ed25519 keypair
  *   info <cid>              Query asset + bounty info
  *   hosts                   List registered hosts
@@ -22,6 +24,8 @@ import { loadConfig } from "./lib/config.js";
 import { uploadCommand } from "./commands/upload.js";
 import { fetchCommand } from "./commands/fetch.js";
 import { tipCommand } from "./commands/tip.js";
+import { fundCommand } from "./commands/fund.js";
+import { postCommand } from "./commands/post.js";
 import { keygenCommand } from "./commands/keygen.js";
 import { infoCommand } from "./commands/info.js";
 import { hostsCommand } from "./commands/hosts.js";
@@ -39,13 +43,18 @@ program
 
 program
   .command("upload")
-  .description("Upload a file: chunk → PUT blocks → PUT file → PUT asset → print URL")
+  .description("Upload a file: chunk → PUT blocks → PUT file → PUT asset → announce → print URL")
   .argument("<file>", "Path to file to upload")
   .option("-g, --gateway <url>", "Gateway URL override")
-  .action(async (file: string, opts: { gateway?: string }) => {
+  .option("-c, --coordinator <url>", "Coordinator URL override")
+  .option("--title <title>", "Content title (default: filename)")
+  .option("--tags <tags>", "Comma-separated tags")
+  .option("--access <mode>", "Access mode: open|paid (default: paid)")
+  .action(async (file: string, opts: { gateway?: string; coordinator?: string; title?: string; tags?: string; access?: string }) => {
     const config = await loadConfig();
     if (opts.gateway) config.gateway = opts.gateway;
-    await uploadCommand(file, config);
+    if (opts.coordinator) config.coordinator = opts.coordinator;
+    await uploadCommand(file, config, { title: opts.title, tags: opts.tags, access: opts.access });
   });
 
 // ── fetch ───────────────────────────────────────────────────────────
@@ -75,6 +84,36 @@ program
     const config = await loadConfig();
     if (opts.coordinator) config.coordinator = opts.coordinator;
     await tipCommand(cid, sats, config);
+  });
+
+// ── fund (EventV1 replacement for tip) ──────────────────────────────
+
+program
+  .command("fund")
+  .description("Fund any ref: POST /event kind=FUND → credit pool")
+  .argument("<ref>", "Pool key — CID, event_id, or topic hash (64-char hex)")
+  .argument("<sats>", "Amount in sats")
+  .option("-c, --coordinator <url>", "Coordinator URL override")
+  .action(async (ref: string, sats: string, opts: { coordinator?: string }) => {
+    const config = await loadConfig();
+    if (opts.coordinator) config.coordinator = opts.coordinator;
+    await fundCommand(ref, sats, config);
+  });
+
+// ── post (threaded comment) ─────────────────────────────────────────
+
+program
+  .command("post")
+  .description("Post a threaded reply: POST /event kind=POST")
+  .argument("<ref>", "Parent event_id or topic hash (64-char hex)")
+  .argument("<text>", "Comment text (≤16 KiB)")
+  .option("-s, --sats <n>", "Attach sats to boost this post", "0")
+  .option("-c, --coordinator <url>", "Coordinator URL override")
+  .action(async (ref: string, text: string, opts: { sats?: string; coordinator?: string }) => {
+    const config = await loadConfig();
+    if (opts.coordinator) config.coordinator = opts.coordinator;
+    const sats = parseInt(opts.sats ?? "0", 10);
+    await postCommand(ref, text, config, { sats: isNaN(sats) ? 0 : sats });
   });
 
 // ── keygen ──────────────────────────────────────────────────────────

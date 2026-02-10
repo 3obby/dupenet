@@ -129,11 +129,11 @@ function createMockPrisma(store: MockStore) {
     },
     bountyPool: {
       upsert: vi.fn(async ({ where, create, update }: {
-        where: { cid: string };
+        where: { poolKey: string };
         create: Record<string, unknown>;
         update: Record<string, unknown>;
       }) => {
-        const existing = store.bountyPools.get(where.cid);
+        const existing = store.bountyPools.get(where.poolKey);
         if (existing) {
           if (update.balance && typeof update.balance === "object" && "increment" in update.balance) {
             existing.balance += update.balance.increment as bigint;
@@ -141,19 +141,19 @@ function createMockPrisma(store: MockStore) {
           return existing;
         }
         const record = {
-          cid: create.cid as string,
+          poolKey: create.poolKey as string,
           balance: create.balance as bigint,
           lastPayoutEpoch: 0,
           totalTipped: create.totalTipped as bigint,
         };
-        store.bountyPools.set(where.cid, record);
+        store.bountyPools.set(where.poolKey, record);
         return record;
       }),
-      findUnique: vi.fn(async ({ where }: { where: { cid: string } }) => {
-        return store.bountyPools.get(where.cid) ?? null;
+      findUnique: vi.fn(async ({ where }: { where: { poolKey: string } }) => {
+        return store.bountyPools.get(where.poolKey) ?? null;
       }),
-      update: vi.fn(async ({ where, data }: { where: { cid: string }; data: Record<string, unknown> }) => {
-        const pool = store.bountyPools.get(where.cid);
+      update: vi.fn(async ({ where, data }: { where: { poolKey: string }; data: Record<string, unknown> }) => {
+        const pool = store.bountyPools.get(where.poolKey);
         if (!pool) throw new Error("Pool not found");
         if (data.balance && typeof data.balance === "object" && "decrement" in data.balance) {
           pool.balance -= data.balance.decrement as bigint;

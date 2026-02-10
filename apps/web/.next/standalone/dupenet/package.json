@@ -1,0 +1,27 @@
+{
+  "name": "dupenet",
+  "private": true,
+  "version": "0.0.1",
+  "description": "Content availability via economic incentives — Layer A blob utility",
+  "type": "module",
+  "workspaces": [
+    "packages/*",
+    "apps/*"
+  ],
+  "scripts": {
+    "build": "turbo run build",
+    "test": "turbo run test",
+    "test:unit": "turbo run test:unit",
+    "test:vectors": "turbo run test:vectors",
+    "test:integration": "turbo run test:integration",
+    "lint": "turbo run lint",
+    "dev:gateway": "turbo run dev --filter=@dupenet/gateway",
+    "dev:mint": "turbo run dev --filter=@dupenet/mint",
+    "dev:coordinator": "turbo run dev --filter=@dupenet/coordinator",
+    "typecheck": "turbo run typecheck",
+    "clean": "turbo run clean"
+  },
+  "engines": {
+    "node": ">=20.0.0"
+  }
+}

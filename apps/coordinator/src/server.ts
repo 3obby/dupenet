@@ -1,26 +1,31 @@
 /**
  * Coordinator server — protocol state management (Postgres-backed).
- * DocRef: MVP_PLAN:§Implementation Order
+ * DocRef: MVP_PLAN:§Implementation Order, §Event Layer
  *
  * Owns: event log, bounty pools, host registry, directory,
  *       epoch aggregation, pin contracts, audits.
  *
  * Routes:
- *   POST /tip            — tip a CID
- *   GET  /bounty/:cid    — query bounty pool
- *   GET  /bounty/feed    — profitable CIDs for node agents
- *   POST /host/register  — register a host
- *   POST /host/serve     — announce host serves a CID
- *   GET  /directory       — get host directory
- *   POST /receipt/submit  — submit receipts for epoch
- *   POST /epoch/settle   — settle a completed epoch (aggregation + payouts)
+ *   POST /event           — unified event ingest (EventV1 envelope)
+ *   GET  /events          — generic event query (by ref, kind, from, since)
+ *   GET  /feed/funded     — pool keys ranked by balance + ANNOUNCE metadata
+ *   GET  /feed/recent     — recent ANNOUNCE events (content discovery)
+ *   GET  /thread/:event_id — thread tree (POST events by ref-chain)
+ *   POST /tip             — tip a CID (shim → POST /event kind=FUND)
+ *   GET  /bounty/:cid     — query bounty pool
+ *   GET  /bounty/feed     — profitable CIDs for node agents
+ *   POST /host/register   — register a host (shim → POST /event kind=HOST)
+ *   POST /host/serve      — announce host serves a CID
+ *   GET  /directory        — get host directory
+ *   POST /receipt/submit   — submit receipts for epoch
+ *   POST /epoch/settle    — settle a completed epoch (aggregation + payouts)
  *   GET  /epoch/summary/:epoch — get settlement results for an epoch
- *   POST /pin            — create pin contract
- *   GET  /pin/:id        — pin status + active hosts + epoch proofs
- *   POST /pin/:id/cancel — cancel pin, return remaining budget minus fee
- *   POST /hosts/check    — trigger spot-checks for all hosts
+ *   POST /pin             — create pin contract
+ *   GET  /pin/:id         — pin status + active hosts + epoch proofs
+ *   POST /pin/:id/cancel  — cancel pin, return remaining budget minus fee
+ *   POST /hosts/check     — trigger spot-checks for all hosts
  *   GET  /hosts/:pubkey/checks — view check history + availability score
- *   GET  /health         — health check (verifies DB connectivity)
+ *   GET  /health          — health check (verifies DB connectivity)
  */
 
 import { fileURLToPath } from "node:url";
@@ -30,13 +35,31 @@ import { PrismaClient } from "@prisma/client";
 import { config } from "./config.js";
 import { creditTip, getPool } from "./views/bounty-pool.js";
 import { registerHost, getAllHosts, addServedCid, getHost } from "./views/host-registry.js";
+import {
+  storeProtocolEvent,
+  queryEvents,
+  feedFunded,
+  feedRecent,
+  getThread,
+} from "./views/materializer.js";
 import { appendEvent, getEventCount } from "./event-log/writer.js";
 import {
   TIP_EVENT,
   HOST_REGISTER_EVENT,
   RECEIPT_SUBMIT_EVENT,
+  PROTOCOL_EVENT,
 } from "./event-log/schemas.js";
-import { currentEpoch, setGenesisTimestamp, verifyEventSignature } from "@dupenet/physics";
+import {
+  currentEpoch,
+  setGenesisTimestamp,
+  verifyEventSignature,
+  verifyEvent,
+  computeEventId,
+  decodeEventBody,
+  EVENT_KIND_HOST,
+  EVENT_MAX_BODY,
+  type EventV1,
+} from "@dupenet/physics";
 import { verifyReceiptV2, type ReceiptV2Input } from "@dupenet/receipt-sdk";
 import { settleEpoch } from "./views/epoch-settlement.js";
 import {
@@ -72,7 +95,122 @@ export async function buildApp(deps?: CoordinatorDeps) {
     await prisma.$disconnect();
   });
 
-  // ── Tip ────────────────────────────────────────────────────────
+  // ── EventV1 Unified Ingest ────────────────────────────────────
+  // POST /event — accepts any EventV1 envelope.
+  // Protocol rule: if event.sats > 0, credit pool[event.ref] += sats (minus royalty).
+  // Kind-specific side effects (host registration, etc.) handled by materializer.
+  // DocRef: MVP_PLAN:§Event Layer, §Protocol vs Materializer Boundary
+  app.post("/event", async (req, reply) => {
+    const event = req.body as EventV1;
+
+    // ── Basic validation ────────────────────────────────────────
+    if (event.v !== 1) {
+      return reply.status(422).send({ error: "unsupported_version", detail: `v=${event.v}` });
+    }
+    if (typeof event.kind !== "number" || event.kind < 0 || event.kind > 255) {
+      return reply.status(422).send({ error: "invalid_kind" });
+    }
+    if (!/^[0-9a-f]{64}$/.test(event.from)) {
+      return reply.status(422).send({ error: "invalid_from", detail: "must be 64 hex chars" });
+    }
+    if (!/^[0-9a-f]{64}$/.test(event.ref)) {
+      return reply.status(422).send({ error: "invalid_ref", detail: "must be 64 hex chars" });
+    }
+    if (typeof event.body !== "string" || event.body.length > EVENT_MAX_BODY * 2) {
+      return reply
+        .status(422)
+        .send({ error: "body_too_large", detail: `max ${EVENT_MAX_BODY} bytes` });
+    }
+    if (event.body.length > 0 && !/^[0-9a-f]*$/.test(event.body)) {
+      return reply.status(422).send({ error: "invalid_body", detail: "must be hex-encoded" });
+    }
+    if (typeof event.sats !== "number" || event.sats < 0 || !Number.isInteger(event.sats)) {
+      return reply.status(422).send({ error: "invalid_sats" });
+    }
+    if (typeof event.ts !== "number" || event.ts < 0) {
+      return reply.status(422).send({ error: "invalid_ts" });
+    }
+
+    // ── Verify Ed25519 signature ────────────────────────────────
+    const sigValid = await verifyEvent(event);
+    if (!sigValid) {
+      return reply
+        .status(401)
+        .send({ error: "invalid_signature", detail: "Ed25519 sig verification failed" });
+    }
+
+    // ── Compute event_id ────────────────────────────────────────
+    const eventId = computeEventId(event);
+
+    // ── Pool credit rule ────────────────────────────────────────
+    // if event.sats > 0: credit pool[event.ref] += sats (minus royalty)
+    let poolCredit = 0;
+    let protocolFee = 0;
+    if (event.sats > 0) {
+      const result = await creditTip(prisma, event.ref, event.sats);
+      poolCredit = result.poolCredit;
+      protocolFee = result.protocolFee;
+    }
+
+    // ── Kind-specific materializer side effects ─────────────────
+    if (event.kind === EVENT_KIND_HOST) {
+      // Host registration/update — decode body and register
+      try {
+        const body = decodeEventBody(event.body) as {
+          endpoint?: string | null;
+          pricing?: { min_request_sats: number; sats_per_gb: number };
+        };
+        if (body.pricing) {
+          const epoch = currentEpoch();
+          await registerHost(
+            prisma,
+            event.from,
+            body.endpoint ?? null,
+            body.pricing,
+            epoch,
+          );
+        }
+      } catch {
+        // Body decode failure is non-fatal — event is still stored
+      }
+    }
+
+    // ── Persist to event log + indexed ProtocolEvent ───────────
+    await appendEvent(prisma, {
+      type: PROTOCOL_EVENT,
+      timestamp: event.ts,
+      signer: event.from,
+      sig: event.sig,
+      payload: {
+        event_id: eventId,
+        kind: event.kind,
+        ref: event.ref,
+        body: event.body,
+        sats: event.sats,
+      },
+    });
+
+    // Indexed materializer view (queryable by ref/kind/from/ts)
+    await storeProtocolEvent(prisma, {
+      eventId,
+      kind: event.kind,
+      from: event.from,
+      ref: event.ref,
+      body: event.body,
+      sats: event.sats,
+      ts: event.ts,
+      sig: event.sig,
+    });
+
+    return reply.send({
+      ok: true,
+      event_id: eventId,
+      ...(event.sats > 0 ? { pool_credit: poolCredit, protocol_fee: protocolFee } : {}),
+    });
+  });
+
+  // ── Tip (shim → POST /event kind=FUND) ──────────────────────
+  // Backward-compatible: accepts old TipV1 format, delegates to pool logic.
   app.post("/tip", async (req, reply) => {
     const { cid, amount, payment_proof, from, sig } = req.body as {
       cid: string;
@@ -142,11 +280,11 @@ export async function buildApp(deps?: CoordinatorDeps) {
       take: limit,
     });
 
-    // For each CID, get host count + endpoints
+    // For each pool key, get host count + endpoints
     const feed = await Promise.all(
       pools.map(async (pool) => {
         const serves = await prisma.hostServe.findMany({
-          where: { cid: pool.cid },
+          where: { cid: pool.poolKey },
           select: { hostPubkey: true },
         });
 
@@ -166,7 +304,7 @@ export async function buildApp(deps?: CoordinatorDeps) {
         const hostCount = serves.length;
 
         return {
-          cid: pool.cid,
+          cid: pool.poolKey,
           balance,
           host_count: hostCount,
           // Profitability: balance per host (higher = more attractive to new hosts)
@@ -447,6 +585,85 @@ export async function buildApp(deps?: CoordinatorDeps) {
         ...assessment,
         checks: checks.slice(0, 50), // last 50 checks
       });
+    },
+  );
+
+  // ── Materializer: Event Query ─────────────────────────────────
+  // GET /events?ref=&kind=&from=&since=&limit=&offset=
+  // Generic event query — all filters optional (AND-combined).
+  // DocRef: MVP_PLAN:§Signal Aggregation
+  app.get("/events", async (req, reply) => {
+    const q = req.query as Record<string, string>;
+
+    const params: {
+      ref?: string;
+      kind?: number;
+      from?: string;
+      since?: number;
+      limit?: number;
+      offset?: number;
+    } = {};
+
+    if (q.ref && /^[0-9a-f]{64}$/.test(q.ref)) params.ref = q.ref;
+    if (q.kind !== undefined) {
+      const k = parseInt(q.kind, 10);
+      if (!isNaN(k) && k >= 0 && k <= 255) params.kind = k;
+    }
+    if (q.from && /^[0-9a-f]{64}$/.test(q.from)) params.from = q.from;
+    if (q.since !== undefined) {
+      const s = parseInt(q.since, 10);
+      if (!isNaN(s) && s >= 0) params.since = s;
+    }
+    if (q.limit) params.limit = Math.min(parseInt(q.limit, 10) || 50, 200);
+    if (q.offset) params.offset = parseInt(q.offset, 10) || 0;
+
+    const events = await queryEvents(prisma, params);
+    return reply.send({ events, timestamp: Date.now() });
+  });
+
+  // ── Materializer: Funded Feed ────────────────────────────────
+  // GET /feed/funded?min_balance=&limit=
+  // Pool keys ranked by balance, enriched with ANNOUNCE event metadata.
+  app.get("/feed/funded", async (req, reply) => {
+    const q = req.query as Record<string, string>;
+    const minBalance = parseInt(q.min_balance ?? "0", 10);
+    const limit = Math.min(parseInt(q.limit ?? "50", 10), 200);
+
+    const items = await feedFunded(prisma, { minBalance, limit });
+    return reply.send({ items, timestamp: Date.now() });
+  });
+
+  // ── Materializer: Recent Feed ────────────────────────────────
+  // GET /feed/recent?limit=&offset=&tag=
+  // Recent ANNOUNCE events — content discovery feed.
+  app.get("/feed/recent", async (req, reply) => {
+    const q = req.query as Record<string, string>;
+    const limit = Math.min(parseInt(q.limit ?? "50", 10), 200);
+    const offset = parseInt(q.offset ?? "0", 10);
+    const tag = q.tag || undefined;
+
+    const items = await feedRecent(prisma, { limit, offset, tag });
+    return reply.send({ items, timestamp: Date.now() });
+  });
+
+  // ── Materializer: Thread View ────────────────────────────────
+  // GET /thread/:event_id
+  // Resolve ref-chain from POST events into a tree.
+  app.get<{ Params: { event_id: string } }>(
+    "/thread/:event_id",
+    async (req, reply) => {
+      const { event_id } = req.params;
+
+      if (!/^[0-9a-f]{64}$/.test(event_id)) {
+        return reply.status(400).send({ error: "invalid_event_id" });
+      }
+
+      const thread = await getThread(prisma, event_id);
+      if (!thread) {
+        return reply.status(404).send({ error: "event_not_found" });
+      }
+
+      return reply.send(thread);
     },
   );
 

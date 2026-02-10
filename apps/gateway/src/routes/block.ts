@@ -7,7 +7,7 @@
  */
 
 import type { FastifyInstance } from "fastify";
-import { cidFromBytes, hashBytes, toHex, fromHex, currentEpoch, type CID } from "@dupenet/physics";
+import { cidFromBytes, hashBytes, toHex, fromHex, currentEpoch, FREE_PREVIEW_MAX_BYTES, type CID } from "@dupenet/physics";
 import type { BlockStore } from "../storage/block-store.js";
 import type { LndClient } from "@dupenet/lnd-client";
 import type { InvoiceStore } from "../l402/invoice-store.js";
@@ -20,6 +20,8 @@ export interface BlockRouteContext {
   invoiceStore: InvoiceStore;
   hostPubkey: string;
   minRequestSats: number;
+  /** Enable free preview tier for blocks ≤ FREE_PREVIEW_MAX_BYTES. Default true. */
+  freePreviewEnabled?: boolean;
 }
 
 export function blockRoutes(app: FastifyInstance, ctx: BlockRouteContext): void {
@@ -76,6 +78,20 @@ export function blockRoutes(app: FastifyInstance, ctx: BlockRouteContext): void 
       const exists = await ctx.store.has(cid as CID);
       if (!exists) {
         return reply.status(404).send({ error: "not_found" });
+      }
+
+      // ── Free preview tier ────────────────────────────────────
+      // Blocks ≤ FREE_PREVIEW_MAX_BYTES are served without L402.
+      // DocRef: MVP_PLAN:§Free Preview Tier, §Open Access Tier
+      if (ctx.freePreviewEnabled !== false) {
+        const previewBytes = await ctx.store.get(cid as CID);
+        if (previewBytes && previewBytes.length <= FREE_PREVIEW_MAX_BYTES) {
+          return reply
+            .header("content-type", "application/octet-stream")
+            .header("x-content-cid", cid)
+            .header("x-free-preview", "true")
+            .send(Buffer.from(previewBytes));
+        }
       }
 
       // ── L402 gating (when configured) ────────────────────────

@@ -51,3 +51,12 @@ export {
 } from "./refusal.js";
 
 export { AuditChallengeV1 } from "./audit.js";
+
+export {
+  EventV1,
+  AccessMode,
+  AnnouncePayload,
+  HostPayload,
+  ListPayload,
+  PinPayload,
+} from "./event.js";

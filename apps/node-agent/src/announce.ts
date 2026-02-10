@@ -35,6 +35,8 @@ export async function announceHost(
     pricing: {
       min_request_sats: config.minRequestSats,
       sats_per_gb: config.satsPerGb,
+      min_bounty_sats: config.minBountySats,
+      open_min_pool_sats: config.openMinPoolSats,
     },
   };
 

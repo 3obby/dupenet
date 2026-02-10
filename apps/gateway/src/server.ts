@@ -1,11 +1,12 @@
 /**
  * Gateway server — HTTP origin for content-addressed blobs.
- * DocRef: MVP_PLAN:§Phase 1 Step 1
+ * DocRef: MVP_PLAN:§Phase 1 Step 1, §Event Layer
  *
  * Routes:
- *   GET/PUT /block/{cid}   — raw block storage (GET is L402-gated)
+ *   GET/PUT /block/{cid}   — raw block storage (GET is L402-gated, free preview for small blocks)
  *   GET/PUT /file/{root}   — file manifests
  *   GET/PUT/HEAD /asset/{root} — asset roots
+ *   GET /cid/{hash}        — unified: resolve to block, file, or asset (nano-blob path)
  *   GET /pricing           — host pricing info
  *   GET /health            — health check
  */
@@ -19,6 +20,7 @@ import { setGenesisTimestamp } from "@dupenet/physics";
 import { blockRoutes, type BlockRouteContext } from "./routes/block.js";
 import { fileRoutes } from "./routes/file.js";
 import { assetRoutes } from "./routes/asset.js";
+import { cidRoutes } from "./routes/cid.js";
 import { pricingRoutes } from "./routes/pricing.js";
 import { healthRoutes } from "./routes/health.js";
 import { config } from "./config.js";
@@ -96,12 +98,14 @@ export async function buildApp(deps?: GatewayDeps) {
     invoiceStore,
     hostPubkey: config.hostPubkey,
     minRequestSats: config.minRequestSats,
+    freePreviewEnabled: config.freePreviewEnabled,
   };
 
   // Register routes
   blockRoutes(app, blockCtx);
   fileRoutes(app, store);
   assetRoutes(app);
+  cidRoutes(app, store);
   pricingRoutes(app);
   healthRoutes(app, store);
 

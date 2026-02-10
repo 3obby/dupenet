@@ -41,11 +41,11 @@ function createMockPrisma() {
         return { _sum: { totalTipped: total } };
       },
       upsert: async ({ where, create, update }: {
-        where: { cid: string };
+        where: { poolKey: string };
         create: Record<string, unknown>;
         update: Record<string, unknown>;
       }) => {
-        const existing = pools.get(where.cid);
+        const existing = pools.get(where.poolKey);
         if (existing) {
           if (update.balance && typeof update.balance === "object" && "increment" in update.balance) {
             existing.balance += update.balance.increment as bigint;
@@ -56,11 +56,11 @@ function createMockPrisma() {
           return existing;
         }
         const record = {
-          cid: create.cid as string,
+          poolKey: create.poolKey as string,
           balance: create.balance as bigint,
           totalTipped: create.totalTipped as bigint,
         };
-        pools.set(where.cid, record);
+        pools.set(where.poolKey, record);
         return record;
       },
     },

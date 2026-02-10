@@ -48,6 +48,17 @@ export const PIN_CANCEL_FEE_PCT = 0.05; // 5%
 
 export const AUDIT_REWARD_PCT = 0.30; // 30%
 
+// ── EventV1 Kind Bytes ─────────────────────────────────────────────
+export const EVENT_KIND_FUND = 0x01; // Fund a pool (replaces TipV1)
+export const EVENT_KIND_ANNOUNCE = 0x02; // Announce asset with metadata
+export const EVENT_KIND_POST = 0x03; // Threaded text (reply/root)
+export const EVENT_KIND_HOST = 0x04; // Host registration/update
+export const EVENT_KIND_REFUSAL = 0x05; // Operator content refusal
+export const EVENT_KIND_ATTEST = 0x06; // Operator attestation
+export const EVENT_KIND_LIST = 0x07; // Collection of refs
+export const EVENT_KIND_PIN_POLICY = 0x08; // Pin policy (durability SLA)
+export const EVENT_KIND_MATERIALIZER = 0x09; // Materializer registration
+
 export const FREE_PREVIEW_MAX_BYTES = 16_384; // 16 KiB — max block served without L402
 export const EVENT_MAX_BODY = 16_384; // 16 KiB — max EventV1.body size
 export const MAX_LIST_ITEMS = 1_000; // cap items per kind=LIST event

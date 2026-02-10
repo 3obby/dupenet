@@ -91,6 +91,17 @@ export {
   blockSelectionPrfHash,
 } from "./block-selection.js";
 
+// EventV1 operations (construct, sign, verify, event_id, body encode/decode)
+export {
+  ZERO_REF,
+  eventSigningPayload,
+  computeEventId,
+  signEvent,
+  verifyEvent,
+  encodeEventBody,
+  decodeEventBody,
+} from "./event-v1.js";
+
 // All schemas
 export * from "./schemas/index.js";
 

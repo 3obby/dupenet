@@ -24,4 +24,6 @@ export const config = {
   satsPerGb: parseInt(env("SATS_PER_GB", "500"), 10),
   /** Protocol genesis timestamp (ms). 0 = Unix epoch. Override for testing. */
   genesisTimestampMs: parseInt(env("GENESIS_TIMESTAMP_MS", "0"), 10),
+  /** Enable free preview tier for blocks ≤ 16 KiB. Set "false" to disable. */
+  freePreviewEnabled: env("FREE_PREVIEW_ENABLED", "true") !== "false",
 } as const;

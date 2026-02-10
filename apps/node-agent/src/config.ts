@@ -20,6 +20,10 @@ export const config = {
   minRequestSats: parseInt(env("AGENT_MIN_REQUEST_SATS", "3"), 10),
   /** Pricing: sats per GB. */
   satsPerGb: parseInt(env("AGENT_SATS_PER_GB", "500"), 10),
+  /** Pricing: minimum bounty sats to serve a CID. Published in PricingV1. */
+  minBountySats: parseInt(env("AGENT_MIN_BOUNTY_SATS", "50"), 10),
+  /** Pricing: minimum pool balance for open-access (no L402) serving. */
+  openMinPoolSats: parseInt(env("AGENT_OPEN_MIN_POOL_SATS", "500"), 10),
   /** How often to check for new profitable CIDs (ms). */
   pollIntervalMs: parseInt(env("AGENT_POLL_INTERVAL_MS", "60000"), 10),
   /** Minimum bounty balance to consider mirroring. */

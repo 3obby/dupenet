@@ -4,6 +4,9 @@
  *
  * Materialized from tip/fund events. Replayable from event log.
  * Founder royalty is volume-tapering: r(v) = 0.15 × (1 + v/125M)^(-0.3155)
+ *
+ * Pool key is a generic bytes32 — can be CID, event_id, or topic hash.
+ * Protocol is key-blind; materializer resolves key → CID for settlement.
  */
 
 import type { PrismaClient } from "@prisma/client";
@@ -23,19 +26,21 @@ export async function getCumulativeVolume(prisma: PrismaClient): Promise<number>
 /**
  * Credit a tip/fund to a bounty pool.
  * Founder royalty (volume-tapering) is deducted; remainder goes to pool.
+ *
+ * @param poolKey - bytes32 hex (CID, event_id, or topic hash)
  */
 export async function creditTip(
   prisma: PrismaClient,
-  cid: string,
+  poolKey: string,
   amount: number,
 ): Promise<{ poolCredit: number; protocolFee: number }> {
   const cumulativeVolume = await getCumulativeVolume(prisma);
   const { royalty, poolCredit } = computeRoyalty(amount, cumulativeVolume);
 
   await prisma.bountyPool.upsert({
-    where: { cid },
+    where: { poolKey },
     create: {
-      cid,
+      poolKey,
       balance: BigInt(poolCredit),
       totalTipped: BigInt(amount),
     },
@@ -54,13 +59,13 @@ export async function creditTip(
  */
 export async function creditBountyDirect(
   prisma: PrismaClient,
-  cid: string,
+  poolKey: string,
   amount: number,
 ): Promise<void> {
   await prisma.bountyPool.upsert({
-    where: { cid },
+    where: { poolKey },
     create: {
-      cid,
+      poolKey,
       balance: BigInt(amount),
       totalTipped: 0n,
     },
@@ -75,15 +80,15 @@ export async function creditBountyDirect(
  */
 export async function debitPayout(
   prisma: PrismaClient,
-  cid: string,
+  poolKey: string,
   amount: number,
   epoch: number,
 ): Promise<boolean> {
-  const pool = await prisma.bountyPool.findUnique({ where: { cid } });
+  const pool = await prisma.bountyPool.findUnique({ where: { poolKey } });
   if (!pool || Number(pool.balance) < amount) return false;
 
   await prisma.bountyPool.update({
-    where: { cid },
+    where: { poolKey },
     data: {
       balance: { decrement: BigInt(amount) },
       lastPayoutEpoch: epoch,
@@ -95,9 +100,9 @@ export async function debitPayout(
 
 export async function getPool(
   prisma: PrismaClient,
-  cid: string,
+  poolKey: string,
 ): Promise<{ balance: number; last_payout_epoch: number } | null> {
-  const pool = await prisma.bountyPool.findUnique({ where: { cid } });
+  const pool = await prisma.bountyPool.findUnique({ where: { poolKey } });
   if (!pool) return null;
   return {
     balance: Number(pool.balance),

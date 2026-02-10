@@ -11,15 +11,31 @@ import {
   chunkFile,
   cidFromBytes,
   cidFromObject,
+  signEvent,
+  encodeEventBody,
+  EVENT_KIND_ANNOUNCE,
   type AssetRootV1,
 } from "@dupenet/physics";
 import type { CliConfig } from "../lib/config.js";
-import { httpPutBytes, httpPutJson } from "../lib/http.js";
+import { loadKeys } from "../lib/keys.js";
+import { httpPutBytes, httpPutJson, httpPost } from "../lib/http.js";
 import { mimeFromPath, kindFromMime } from "../lib/mime.js";
+
+interface EventResponse {
+  ok: boolean;
+  event_id: string;
+}
+
+export interface UploadOpts {
+  title?: string;
+  tags?: string;
+  access?: string;
+}
 
 export async function uploadCommand(
   filePath: string,
   config: CliConfig,
+  opts: UploadOpts = {},
 ): Promise<void> {
   // 1. Read file
   const fileBytes = new Uint8Array(await readFile(filePath));
@@ -74,10 +90,46 @@ export async function uploadCommand(
   await httpPutJson(assetUrl, assetRoot);
   console.log(`  Asset registered`);
 
-  // 7. Print result
+  // 7. Emit ANNOUNCE event (if keys available)
+  let announceId: string | undefined;
+  try {
+    const keys = await loadKeys(config.keyPath);
+    const announceBody = encodeEventBody({
+      title: opts.title ?? fileName,
+      mime,
+      size: fileBytes.length,
+      access: opts.access ?? "paid",
+      ...(opts.tags ? { tags: opts.tags.split(",").map((t) => t.trim()) } : {}),
+    });
+
+    const signed = await signEvent(keys.privateKey, {
+      v: 1,
+      kind: EVENT_KIND_ANNOUNCE,
+      from: keys.publicKeyHex,
+      ref: assetRootCid,
+      body: announceBody,
+      sats: 0,
+      ts: Date.now(),
+    });
+
+    const result = await httpPost<EventResponse>(
+      `${config.coordinator}/event`,
+      signed,
+    );
+    announceId = result.event_id;
+    console.log(`  Announced (event_id: ${announceId.slice(0, 12)}..)`);
+  } catch {
+    // No keys or coordinator unavailable — skip announce (upload still succeeded)
+    console.log(`  (announce skipped — run 'dupenet keygen' or check coordinator)`);
+  }
+
+  // 8. Print result
   console.log();
   console.log(`asset_root: ${assetRootCid}`);
   console.log(`url:        ${config.gateway}/asset/${assetRootCid}`);
+  if (announceId) {
+    console.log(`event_id:   ${announceId}`);
+  }
 }
 
 function formatSize(bytes: number): string {

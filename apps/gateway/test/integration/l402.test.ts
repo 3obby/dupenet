@@ -33,6 +33,8 @@ describe("L402 gated block fetch", () => {
     tmpDir = await mkdtemp(join(tmpdir(), "gateway-l402-test-"));
     process.env.BLOCK_STORE_PATH = tmpDir;
     process.env.HOST_PUBKEY = "aa".repeat(32);
+    // Disable free preview so L402 gating is exercised for all block sizes
+    process.env.FREE_PREVIEW_ENABLED = "false";
 
     mockLnd = new MockLndClient();
     mockMint = new TestMintClient();

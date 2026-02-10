@@ -29,7 +29,7 @@ beforeAll(async () => {
 });
 
 function createMockPrisma() {
-  const pools = new Map<string, { cid: string; balance: bigint; totalTipped: bigint; lastPayoutEpoch: number }>();
+  const pools = new Map<string, { poolKey: string; balance: bigint; totalTipped: bigint; lastPayoutEpoch: number }>();
   const hosts = new Map<string, Record<string, unknown>>();
   const hostServes: Array<{ hostPubkey: string; cid: string; registeredEpoch: number }> = [];
   let eventSeq = 1;
@@ -48,15 +48,15 @@ function createMockPrisma() {
           .filter((p) => p.balance >= minBal)
           .sort((a, b) => Number(b.balance - a.balance));
       },
-      findUnique: async ({ where }: { where: { cid: string } }) => {
-        return pools.get(where.cid) ?? null;
+      findUnique: async ({ where }: { where: { poolKey: string } }) => {
+        return pools.get(where.poolKey) ?? null;
       },
       upsert: async ({ where, create, update }: {
-        where: { cid: string };
+        where: { poolKey: string };
         create: Record<string, unknown>;
         update: Record<string, unknown>;
       }) => {
-        const existing = pools.get(where.cid);
+        const existing = pools.get(where.poolKey);
         if (existing) {
           if (update.balance && typeof update.balance === "object" && "increment" in update.balance) {
             existing.balance += update.balance.increment as bigint;
@@ -67,12 +67,12 @@ function createMockPrisma() {
           return existing;
         }
         const record = {
-          cid: create.cid as string,
+          poolKey: create.poolKey as string,
           balance: create.balance as bigint,
           totalTipped: create.totalTipped as bigint,
           lastPayoutEpoch: 0,
         };
-        pools.set(where.cid, record);
+        pools.set(where.poolKey, record);
         return record;
       },
     },
@@ -158,19 +158,19 @@ describe("GET /bounty/feed", () => {
 
     // Seed bounty pools
     mock._pools.set("aa".repeat(32), {
-      cid: "aa".repeat(32),
+      poolKey: "aa".repeat(32),
       balance: 500n,
       totalTipped: 500n,
       lastPayoutEpoch: 0,
     });
     mock._pools.set("bb".repeat(32), {
-      cid: "bb".repeat(32),
+      poolKey: "bb".repeat(32),
       balance: 2000n,
       totalTipped: 2000n,
       lastPayoutEpoch: 0,
     });
     mock._pools.set("cc".repeat(32), {
-      cid: "cc".repeat(32),
+      poolKey: "cc".repeat(32),
       balance: 50n, // below default min_balance=100
       totalTipped: 50n,
       lastPayoutEpoch: 0,
@@ -192,7 +192,7 @@ describe("GET /bounty/feed", () => {
     const mock = prisma as unknown as ReturnType<typeof createMockPrisma>;
     const CID = "dd".repeat(32);
 
-    mock._pools.set(CID, { cid: CID, balance: 1000n, totalTipped: 1000n, lastPayoutEpoch: 0 });
+    mock._pools.set(CID, { poolKey: CID, balance: 1000n, totalTipped: 1000n, lastPayoutEpoch: 0 });
 
     // Register host first (needed for host/serve later)
     const app = await buildApp({ prisma: prisma as never });

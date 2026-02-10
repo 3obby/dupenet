@@ -182,22 +182,22 @@ Audit date: 2026-02-09. Cross-referenced all completed code against MVP plan spe
 
 ## Pool Key (blocks event/topic funding)
 
-[!] BountyPool keyed by CID only
-    - Code: Prisma BountyPool.cid: String @id; all routes use /bounty/:cid
-    - Plan: pool_key = bytes32 (can be CID, event_id, or topic hash)
-    - Fix: Sprint 7b. Rename BountyPool.cid → BountyPool.poolKey. Accept any bytes32.
+## Pool Key (blocks event/topic funding) — FIXED
 
-## Gateway Endpoints (missing 2 from interface spec)
+[x] BountyPool keyed by generic bytes32
+    - Prisma BountyPool.poolKey: String @id @map("cid") — no DB migration needed
+    - All routes, views, tests updated to use poolKey
+    - Accepts CID, event_id, or topic hash
 
-[!] No GET /cid/{hash} unified endpoint
-    - Code: only /block/:cid, /file/:root, /asset/:root
-    - Plan: "Events ≤ CHUNK_SIZE_DEFAULT are nano-blobs — fetched via GET /cid/{event_id}"
-    - Fix: Sprint 7b. Add GET /cid/:hash → if single block, serve; if asset, 302 to /asset/.
+## Gateway Endpoints — FIXED
 
-[!] No free preview tier
-    - Code: dev mode = all free; prod = all L402. No size-based free serving.
-    - Plan: "Thumbnails/excerpts ≤16 KiB served without L402, rate-limited per-IP"
-    - Fix: Sprint 7b. Blocks ≤ FREE_PREVIEW_MAX_BYTES served without L402 when host opts in.
+[x] GET /cid/{hash} unified endpoint
+    - apps/gateway/src/routes/cid.ts: if asset → 302 /asset/; if file → 302 /file/; if block → serve bytes
+
+[x] Free preview tier
+    - blocks ≤ FREE_PREVIEW_MAX_BYTES (16 KiB) served without L402
+    - configurable: FREE_PREVIEW_ENABLED env var (default true)
+    - per-IP rate limiting deferred (sufficient for founder scale)
 
 ## PricingV1 Schema — FIXED
 
@@ -225,10 +225,10 @@ Plan constants still missing from code (add during relevant sprint):
 [ ] EpochSummary missing receipt_merkle_root    → Sprint 7d.1 (snapshot/compaction)
 [ ] DirectoryV1 missing regions[], refusals_cid, materializers[]  → Sprint 7b
 [ ] No MaterializerV1 / MaterializerPricingV1 schema  → Sprint 7b
-[ ] No EventV1 TypeBox schema (this IS Sprint 7b)
+[x] EventV1 TypeBox schema                       DONE — packages/physics/src/schemas/event.ts
 [ ] Pin cancel: no SLA-triggered fee waiver    → Sprint 7b (needs SLA monitoring)
 [ ] GET /served endpoint missing               → Sprint 7b (low priority)
-[ ] Node-agent doesn't publish min_bounty_sats → Sprint 7b (after PricingV1 fix)
+[x] Node-agent publishes min_bounty_sats       DONE — announce.ts includes full PricingV1
 
 ## False Positive in Progress Log — FIXED
 
@@ -243,7 +243,50 @@ Plan constants still missing from code (add during relevant sprint):
 [x] Dead code: satsPerGb passthrough   gateway/routes/block.ts — removed from BlockRouteContext (flat minRequestSats is correct)
 [x] Test: royalty.ts coverage          16 new tests: formula at plan anchor points, monotonicity, edge cases, input guards
 [x] Test: availability transition      fixed test expectation: score=0 → INACTIVE (not DEGRADED) per plan lifecycle
-    Total: 186/186 tests pass (was 170)
+    Total after review fixes: 186/186 tests pass (was 170)
+
+## Sprint 7b Implementation (2026-02-09)
+
+[x] EventV1 schema + sign/verify      packages/physics: EventV1 TypeBox, event-v1.ts (sign, verify, eventId, body encode/decode)
+[x] Kind constants + payloads         9 kind bytes (FUND..MATERIALIZER) + AnnouncePayload, HostPayload, ListPayload, PinPayload
+[x] POST /event endpoint              coordinator: unified event ingest, sig verify, pool credit, kind=HOST side effect
+[x] Pool key generalization           Prisma BountyPool.poolKey (@map("cid")), all views + tests updated
+[x] GET /cid/:hash endpoint           gateway: unified resolve (asset→302, file→302, block→serve)
+[x] Free preview tier                 gateway: blocks ≤16 KiB served without L402 (configurable)
+[x] Node-agent min_bounty_sats       announce.ts: publishes full PricingV1 with min_bounty_sats + open_min_pool_sats
+[x] 24 new EventV1 tests             event-v1.test.ts: construct, sign, verify, event_id, body, kind constants, lifecycle
+    Total after Sprint 7b: 203/203 tests pass (was 186)
+
+## Sprint 7d Implementation (2026-02-09)
+
+[x] ProtocolEvent Prisma model        indexed materializer view: event_id (unique), (ref), (kind,ts), (from,ts)
+[x] POST /event → ProtocolEvent       events now stored in both generic log + indexed ProtocolEvent table
+[x] GET /events query                  generic event query: filter by ref, kind, from, since; paginated
+[x] GET /feed/funded                   pool keys ranked by balance + ANNOUNCE metadata from ProtocolEvent
+[x] GET /feed/recent                   recent ANNOUNCE events, decoded metadata, tag filter, pagination
+[x] GET /thread/:event_id             recursive ref-chain resolution into tree (depth-limited)
+[x] materializer.ts view module       storeProtocolEvent, queryEvents, feedFunded, feedRecent, getThread
+[x] 18 new materializer tests         materializer.test.ts: POST→store, events query, funded/recent feeds, thread tree
+    Total after Sprint 7d: 221/221 tests pass (was 203)
+
+## Sprint 7e Implementation (2026-02-09)
+
+[x] Next.js 15 scaffold               apps/web: App Router, server components, no client JS
+    - package.json, tsconfig.json, next.config.js, globals.css
+    - craigslist aesthetic: monospace, no styling, symbols/numbers only
+[x] API client                        src/lib/api.ts: all coordinator fetches + formatting helpers
+[x] / Leaderboard                     table: #, sat, hosts, title, proof — from GET /feed/funded
+[x] /v/[ref] Content                  metadata + stats + thread — from GET /events + /bounty + /thread
+[x] /c/[ref] Collection               list items with per-item pool balances — from GET /events + /bounty
+[x] /p/[ref] Proof                    hash, pool, hosts, epoch proofs — from /bounty + /directory + /epoch/summary
+    Total: 221/221 tests pass + Next.js build clean (4 routes, all server-rendered)
+
+## Sprint 7c Implementation (2026-02-09)
+
+[x] dupenet fund <ref> <sats>         apps/cli/src/commands/fund.ts — POST /event kind=FUND
+[x] dupenet post <ref> <text>         apps/cli/src/commands/post.ts — POST /event kind=POST, --sats flag
+[x] dupenet upload + ANNOUNCE         upload.ts now emits ANNOUNCE event with --title/--tags/--access
+    Total: 221/221 tests pass + CLI tsc clean + Next.js build clean
 
 
 ================================================================================
@@ -370,43 +413,55 @@ Architectural decision (2025-02-08):
 The protocol-level event primitive. Everything in materializer depends on this.
 ALSO: fixes all divergences marked "Sprint 7b" in §DIVERGENCES above.
 
-[ ] EventV1 TypeBox schema             { v: u8, kind: u8, from: bytes32, ref: bytes32, body: bytes, sats: u64, ts: u64, sig }
+[x] EventV1 TypeBox schema             { v: u8, kind: u8, from: bytes32, ref: bytes32, body: bytes, sats: u64, ts: u64, sig }
     - canonical serialization (same pattern as existing schemas)
     - event_id = SHA256(canonical(EventV1 minus sig))
     - Ed25519 signature: sign/verify canonical(EventV1 minus sig)
-    - body: inline ≤16 KiB (kind-specific payload)
+    - body: hex-encoded CBOR, inline ≤16 KiB (kind-specific payload)
     - sats: economic weight (0 = free statement, >0 = pool credit)
-[ ] Kind byte constants                0x01 FUND, 0x02 ANNOUNCE, 0x03 POST, 0x04 HOST, 0x05 REFUSAL,
+    - packages/physics/src/schemas/event.ts + packages/physics/src/event-v1.ts
+[x] Kind byte constants                0x01 FUND, 0x02 ANNOUNCE, 0x03 POST, 0x04 HOST, 0x05 REFUSAL,
                                        0x06 ATTEST, 0x07 LIST, 0x08 PIN_POLICY, 0x09 MATERIALIZER
-[ ] Kind payload schemas (TypeBox)     AnnouncePayload, HostPayload, ListPayload, PinPayload
+    - packages/physics/src/constants.ts: EVENT_KIND_* constants
+[x] Kind payload schemas (TypeBox)     AnnouncePayload, HostPayload, ListPayload, PinPayload
     - these are materializer conventions, not protocol — live under physics for convenience
     - unknown kinds: preserve, don't reject (extensibility)
     - AnnouncePayload.access: "open" | "paid" (default "paid") — publisher intent for open-access serving
       "open" = full content served without L402 (hosts earn from bounty pool only)
       materializer renders inline vs behind paywall based on this field
       see MVP_PLAN:§New User Journey (First Contact), §Open Access Tier
-[ ] PricingV1.open_min_pool_sats       host-configured threshold for open-access serving
+[x] PricingV1.open_min_pool_sats       DONE (added in prior sprint) — already in TypeBox schema + constants
     - pool below threshold → host declines open-access, falls back to L402
     - prevents free-CDN abuse: open access is sponsored availability, not charity
     - default: 500 sats (OPEN_MIN_POOL_SATS_DEFAULT in constants)
-    - add to existing PricingV1 schema alongside min_bounty_sats
-[ ] Pool credit rule                   if event.sats > 0: credit pool[event.ref] += sats (minus protocol fee)
+[x] Pool credit rule                   if event.sats > 0: credit pool[event.ref] += sats (minus royalty)
     - pool_key = event.ref (bytes32 — can be CID, event_id, topic hash)
     - protocol is key-blind; materializer resolves ref → CID for settlement
-[ ] EventV1 tests                      construct, sign, verify; pool credit; reject forged/missing sig
-[ ] Migrate existing events            TipV1 → kind=FUND, HostServeV1 → kind=HOST, HostRegisterV1 → kind=HOST
-    - backward compat: existing POST /tip, POST /host/register still work (shim to POST /event)
+    - implemented in POST /event handler (apps/coordinator/src/server.ts)
+[x] EventV1 tests                      24 tests: construct, sign, verify, event_id, body encode/decode, kind constants
+    - packages/physics/test/vectors/event-v1.test.ts
+[x] Migrate existing events            POST /event accepts all kinds; POST /tip + POST /host/register remain as shims
+    - backward compat: existing POST /tip, POST /host/register still work
     - new canonical path: POST /event (accepts any kind)
+    - kind=HOST events trigger host registration as materializer side effect
 
 Divergence fixes (bundled into this sprint — see §DIVERGENCES):
 [x] Replace fee model                  DONE — royalty.ts + bounty-pool.ts + constants.ts. 170/170 tests pass.
 [x] PricingV1 complete                 DONE — 4 new Optional fields in TypeBox schema. Constants added.
 [x] New constants                      DONE — EVENT_MAX_BODY, MAX_LIST_ITEMS, FREE_PREVIEW_MAX_BYTES, EVENT_POW_TARGET.
-[ ] Pool key → bytes32                 rename Prisma BountyPool.cid → poolKey. Accept CID/event_id/topic_hash.
-[ ] GET /cid/:hash endpoint            gateway: if single block → serve; if asset → 302 to /asset/. Nano-blob path.
-[ ] Free preview tier                  blocks ≤ FREE_PREVIEW_MAX_BYTES served without L402. Rate-limit per-IP.
+[x] Pool key → bytes32                 Prisma BountyPool.cid → poolKey (@map("cid") preserves column).
+    - bounty-pool.ts, epoch-settlement.ts, server.ts, all tests updated
+    - pool key accepts any bytes32: CID, event_id, topic hash
+[x] GET /cid/:hash endpoint            gateway: if asset → 302 /asset/; if file → 302 /file/; if block → serve bytes.
+    - apps/gateway/src/routes/cid.ts: nano-blob path for events ≤ CHUNK_SIZE
+[x] Free preview tier                  blocks ≤ FREE_PREVIEW_MAX_BYTES (16 KiB) served without L402.
+    - apps/gateway/src/routes/block.ts: check before L402 gate
+    - configurable: FREE_PREVIEW_ENABLED env var (default true)
+    - L402 tests disable preview to exercise paid flow
 [ ] BASE_FEE                           21-210 sats (dynamic, EIP-1559 style) — EventV1 ingest pricing.
-[ ] Node-agent publishes min_bounty_sats  in PricingV1 during host registration.
+[x] Node-agent publishes min_bounty_sats  in PricingV1 during host registration.
+    - apps/node-agent/src/config.ts: AGENT_MIN_BOUNTY_SATS, AGENT_OPEN_MIN_POOL_SATS
+    - apps/node-agent/src/announce.ts: includes min_bounty_sats + open_min_pool_sats in pricing
 
 Exit: physics exports EventV1. Construct event, sign, verify. Pool rule tested.
       Kind payloads constructable/verifiable. One envelope replaces per-action schemas.
@@ -423,16 +478,18 @@ All publishing now goes through POST /event with appropriate kind bytes.
     - recursive traversal, filters by known MIME types
     - progress: file N/M, blocks K/T overall
     - skip already-uploaded blocks (409 Conflict = ok, resume on failure)
-    - after upload: POST kind=ANNOUNCE event per file, POST kind=LIST event for collection
-[ ] Upload metadata flags               --title, --description, --tags, --language, --source, --access open|paid
+    - after upload: POST kind=LIST event for collection
+[x] Upload metadata + ANNOUNCE          `dupenet upload` now emits ANNOUNCE event after asset upload
+    - --title, --tags, --access open|paid flags
+    - ANNOUNCE body: title, mime, size, access, tags (CBOR-encoded)
+    - graceful fallback: if no keys or coordinator down, upload still succeeds
 [ ] Thumbnail generation                generate preview thumbnails client-side (images: 200px JPEG; text: 500 char excerpt)
-[ ] `dupenet fund <ref> <sats>`         unified funding command (replaces `dupenet tip`)
-    - POST /event with kind=FUND, sats=amount, ref=pool_key
+[x] `dupenet fund <ref> <sats>`         POST /event kind=FUND → pool credit
     - works for any ref: CID, event_id, topic hash
-    - materializer resolves LIST refs → fan-out across constituents
-[ ] `dupenet post <ref> <text>`         publish threaded text (kind=POST)
+    - prints event_id, pool_credit, royalty
+[x] `dupenet post <ref> <text>`         POST /event kind=POST → threaded reply
     - ref = parent event_id (reply) or topic hash (root post)
-    - body = inline text ≤16 KiB
+    - body = CBOR-encoded { text } ≤16 KiB
     - optional --sats flag to boost own post
 
 Exit: `dupenet upload ~/leak/ --title "Court Filings" --tags epstein,legal`
@@ -445,21 +502,24 @@ Exit: `dupenet upload ~/leak/ --title "Court Filings" --tags epstein,legal`
 Materializer views over EventV1 stream. These are product features, not protocol.
 All endpoints are materializer conventions — other materializers may offer different views.
 
-[ ] POST /event                         unified event ingest endpoint
-    - validate EventV1 sig
-    - if sats > 0: credit pool[ref]
-    - index by kind, ref, from, ts
-    - rate-limit per pubkey/IP (MVP spam defense; paid ingest later)
-[ ] GET /events?ref=&kind=&from=&since= generic event query (replaces per-kind GET endpoints)
-[ ] Prisma model: Event                 { id, kind, from, ref, body, sats, ts, sig, event_id }
+[x] POST /event                         DONE in Sprint 7b — validates EventV1, credits pool, stores in event log
+    - now also stores in indexed ProtocolEvent table (Sprint 7d)
+    - rate-limit per pubkey/IP deferred (sufficient at founder scale)
+[x] GET /events?ref=&kind=&from=&since= generic event query — all filters optional, AND-combined, newest first
+    - apps/coordinator/src/views/materializer.ts: queryEvents()
+[x] Prisma model: ProtocolEvent         { id, eventId, kind, from, ref, body, sats, ts, sig }
     - indexes: (ref), (kind, ts), (from, ts), (event_id unique)
-[ ] GET /feed/recent                    recent ANNOUNCE events (paginated, filterable by tags)
-[ ] GET /feed/funded                    pool_keys ranked by balance (replaces GET /bounty/feed)
+    - separate from generic Event log — this is the queryable materializer view
+[x] GET /feed/recent                    recent ANNOUNCE events (paginated, filterable by tags)
+    - decodes CBOR body → title, description, tags, mime, size, access
+[x] GET /feed/funded                    pool_keys ranked by balance + ANNOUNCE metadata enrichment
+    - host_count per pool key, most recent ANNOUNCE decoded for metadata
 [ ] GET /host/:pubkey/scorecard         host reputation (from HOST events + spot-checks + receipts)
 [ ] GET /content/:ref/signals           content resilience + graph importance (dual score)
 [ ] GET /author/:pubkey/profile         pseudonymous reputation (events by pubkey + demand on their content)
 [ ] GET /market/quote                   supply curve from host min_bounty_sats thresholds
-[ ] GET /thread/:event_id               thread view: resolve ref chain from kind=POST events, return tree
+[x] GET /thread/:event_id               thread tree: recursive ref-chain resolution from POST events
+    - depth-limited (default 10), builds in-memory tree, sorted oldest-first
 [ ] GET /cluster/:ref?hops=N            graph neighborhood: all nodes within N hops via ref/body/list edges
 [ ] Body edge extraction                parse [ref:bytes32] tokens from POST/ANNOUNCE bodies at ingest
     - Prisma model: BodyEdge { source_event_id, target_ref, edge_sats }
@@ -504,30 +564,37 @@ drives adoption, distribution, funding, and institutional revenue. The new user 
 (MVP_PLAN:§New User Journey) lives or dies here.
 DocRef: MVP_PLAN:§The Leaderboard (Step 8), §New User Journey (First Contact)
 
-### Minimum ship (4 pages)
+### Minimum ship (4 pages) — DONE (read-only, craigslist aesthetic)
 
-[ ] Scaffold web app                   apps/web, Next.js, server-renders from materializer APIs
+[x] Scaffold web app                   apps/web, Next.js 15, App Router, server components only
+    - monospace system font, no CSS framework, no JS client-side
+    - API client: src/lib/api.ts (coordinator + gateway URLs from env)
+    - revalidate=30s server-side caching on all pages
 
-[ ] / Leaderboard
-    - rows: title, pool sats, copies, Fortify button
-    - top bar: total sats, host count, "live" indicator
-    - SSE: pool balance + rank updates (this IS the activity feed at low volume)
+[x] / Leaderboard
+    - table: rank #, sat balance, host count, title (linked), proof link
+    - server-rendered from GET /feed/funded
+    - (deferred: Fortify button, SSE live updates, total sats header)
 
-[ ] /v/<ref> Content page
-    - inline render if access="open", else excerpt/thumbnail + L402
-    - 3 stats: pool sats, copies, runway (months at current drain)
-    - Fortify button: amount selector (21/210/2100/custom) + WebLN/QR
-    - thread: list comments (kind=POST with ref=this) + comment box (PoW for free, sats to boost)
+[x] /v/<ref> Content page
+    - title, author, date, description, tags
+    - stats row: sat balance, access mode, estimated runway
+    - download link (gateway /cid/<ref>), proof link
+    - thread: nested replies with author, sats, date, text (from GET /thread)
+    - (deferred: Fortify button, inline render, comment box, WebLN)
 
-[ ] /c/<list> Collection page
-    - list items: title, pool, copies
-    - Fund All button (size-weighted default)
+[x] /c/<list> Collection page
+    - title, item count, author, date, description
+    - table: sat balance per item, ref link, proof link
+    - pool balance fetched per item via GET /bounty/:ref
+    - (deferred: Fund All button)
 
-[ ] /p/<ref> Proof page
-    - hash verified badge
-    - Bitcoin anchor txid + date
-    - host endpoints list
-    - download evidence bundle (EvidenceExportV1 JSON)
+[x] /p/<ref> Proof page
+    - full ref hash, "sha256 verified on ingest"
+    - sat balance in pool, last payout epoch
+    - trusted hosts table: endpoint, pubkey, availability score
+    - epoch proofs table (last 6): epoch, host, receipts, clients, reward sats
+    - (deferred: Bitcoin anchor txid, evidence bundle download)
 
 ### Next pass (add after 4 pages prove the loop)
 

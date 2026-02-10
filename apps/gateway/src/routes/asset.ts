@@ -10,6 +10,11 @@ import { getManifest } from "./file.js";
 /** In-memory asset store. TODO: move to coordinator/DB in Sprint 3. */
 const assets = new Map<CID, AssetRootV1>();
 
+/** Look up an asset by root CID. Used by /cid/:hash route. */
+export function getAsset(root: CID): AssetRootV1 | undefined {
+  return assets.get(root);
+}
+
 export function assetRoutes(app: FastifyInstance): void {
   /**
    * PUT /asset/:root — register an asset root.

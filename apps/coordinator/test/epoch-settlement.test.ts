@@ -83,12 +83,12 @@ function createMockPrisma(store: MockStore) {
       }),
     },
     bountyPool: {
-      findUnique: vi.fn(async ({ where }: { where: { cid: string } }) => {
-        return store.bountyPools.get(where.cid) ?? null;
+      findUnique: vi.fn(async ({ where }: { where: { poolKey: string } }) => {
+        return store.bountyPools.get(where.poolKey) ?? null;
       }),
-      update: vi.fn(async ({ where, data }: { where: { cid: string }; data: Record<string, unknown> }) => {
-        const pool = store.bountyPools.get(where.cid);
-        if (!pool) throw new Error(`Pool not found: ${where.cid}`);
+      update: vi.fn(async ({ where, data }: { where: { poolKey: string }; data: Record<string, unknown> }) => {
+        const pool = store.bountyPools.get(where.poolKey);
+        if (!pool) throw new Error(`Pool not found: ${where.poolKey}`);
         if (data.balance && typeof data.balance === "object" && "decrement" in data.balance) {
           pool.balance -= data.balance.decrement as bigint;
         }

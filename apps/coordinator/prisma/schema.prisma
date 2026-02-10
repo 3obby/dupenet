@@ -27,10 +27,33 @@ model Event {
   @@index([timestamp])
 }
 
+// ── Protocol Events (materialized from EventV1 ingest) ─────────────
+// Queryable view over EventV1 events. The Event model above is the
+// generic append-only log; this model indexes EventV1-specific fields.
+// DocRef: MVP_PLAN:§Event Layer, §Signal Aggregation
+
+model ProtocolEvent {
+  id        Int      @id @default(autoincrement())
+  eventId   String   @unique @map("event_id") // SHA256(canonical(EventV1 minus sig))
+  kind      Int      // kind byte (0x01–0xFF)
+  from      String   // signer pubkey hex
+  ref       String   // reference — CID, event_id, or topic hash
+  body      String   @default("") // hex-encoded CBOR payload
+  sats      Int      @default(0) // economic weight
+  ts        BigInt   // event timestamp (ms)
+  sig       String   // Ed25519 signature (base64)
+  createdAt DateTime @default(now())
+
+  @@index([ref])
+  @@index([kind, ts])
+  @@index([from, ts])
+  @@map("protocol_event")
+}
+
 // ── Materialized Views ─────────────────────────────────────────────
 
 model BountyPool {
-  cid              String @id // CID hex
+  poolKey          String @id @map("cid") // bytes32 hex — CID, event_id, or topic hash
   balance          BigInt @default(0)
   lastPayoutEpoch  Int    @default(0)
   totalTipped      BigInt @default(0)
