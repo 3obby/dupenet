@@ -88,7 +88,7 @@ export async function buildApp(deps?: MintDeps) {
     // Verify settlement against LND (when configured)
     if (lndClient) {
       try {
-        const info = await lndClient.lookupInvoice(body.payment_hash);
+        const info = await lndClient.lookupInvoice(payment_hash as string);
 
         if (!info.settled) {
           return reply
@@ -96,10 +96,10 @@ export async function buildApp(deps?: MintDeps) {
             .send({ error: "not_settled", state: info.state });
         }
 
-        if (info.amtPaidSats < body.price_sats) {
+        if (info.amtPaidSats < (price_sats as number)) {
           return reply.status(402).send({
             error: "underpaid",
-            expected: body.price_sats,
+            expected: price_sats,
             paid: info.amtPaidSats,
           });
         }
