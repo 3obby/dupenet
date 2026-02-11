@@ -555,26 +555,26 @@ All endpoints are materializer conventions — other materializers may offer dif
     - decodes CBOR body → title, description, tags, mime, size, access
 [x] GET /feed/funded                    pool_keys ranked by balance + ANNOUNCE metadata enrichment
     - host_count per pool key, most recent ANNOUNCE decoded for metadata
-[ ] GET /host/:pubkey/scorecard         host reputation (from HOST events + spot-checks + receipts)
-[ ] GET /content/:ref/signals           content resilience + graph importance (dual score)
-[ ] GET /author/:pubkey/profile         pseudonymous reputation (events by pubkey + demand on their content)
-[ ] GET /market/quote                   supply curve from host min_bounty_sats thresholds
+[x] GET /host/:pubkey/scorecard         host reputation (from HOST events + spot-checks + receipts)
+[x] GET /content/:ref/signals           content resilience + graph importance (dual score)
+[x] GET /author/:pubkey/profile         pseudonymous reputation (events by pubkey + demand on their content)
+[x] GET /market/quote                   supply curve from host min_bounty_sats thresholds
     - also: preserve tier pricing (Gold/Silver/Bronze sats estimates)
     - also: auto-bid contribution estimate per CID
     - consumed by PreserveButton for tier selector UX
 [x] GET /thread/:event_id               thread tree: recursive ref-chain resolution from POST events
     - depth-limited (default 10), builds in-memory tree, sorted oldest-first
 [ ] GET /cluster/:ref?hops=N            graph neighborhood: all nodes within N hops via ref/body/list edges
-[ ] Body edge extraction                parse [ref:bytes32] tokens from POST/ANNOUNCE bodies at ingest
+[x] Body edge extraction                parse [ref:bytes32] tokens from POST/ANNOUNCE bodies at ingest
     - Prisma model: BodyEdge { source_event_id, target_ref, edge_sats }
     - index: (target_ref) for inbound citation queries
-[ ] Graph importance computation        weighted PageRank over citation DAG (ref + body + list edges)
+[x] Graph importance computation        weighted PageRank over citation DAG (ref + body + list edges)
     - incremental: recompute affected neighborhoods on new events
     - expose via GET /content/:ref/signals (graph_importance field)
 [ ] Event-to-blob promotion             funded events above threshold serialized as CIDs → PUT /block
     - materializer policy: threshold configurable (e.g. 1000 sats)
     - promoted events enter normal replication market
-[ ] GET /orphans                        three-part orphan score: high direct pool + low graph connectivity
+[x] GET /orphans                        three-part orphan score: high direct pool + low graph connectivity
                                        (few inbound ref/body edges from funded events) + low discussion depth
                                        (few/zero kind=POST replies). "Funded, but under-analyzed." Analyst job board.
                                        Hard to game: inflating pool costs real sats, reducing connectivity means
@@ -654,14 +654,14 @@ DocRef: MVP_PLAN:§The Leaderboard (Step 8), §New User Journey (First Contact)
 
 2) Fortify (+฿)
 [x] Amount buttons 210/21k/21m         replace [21,210,2100] with [210,21000,21000000], labels: 210/21k/21m
-[ ] Fortify modal/sheet                extract from inline to overlay/bottom-sheet for mobile
+[x] Fortify modal/sheet                extract from inline to overlay/bottom-sheet for mobile
     - payment pending: spinner (฿...) + auto-poll 3s, no manual "I paid" button
 
 3) Discuss (💬)
 [x] Event PoW (Web Worker)             cross-ref: see §Client interaction model below
 
 4) Explore (/ leaderboard)
-[ ] Inline +฿ on rows                  FortifyButton per leaderboard row (or link to /v/<ref>#+฿)
+[x] Inline +฿ on rows                  FortifyButton per leaderboard row (or link to /v/<ref>#+฿)
 
 5) Fund collection (/c/<list>)
 [ ] Fund All flow                      amount input → size-weighted split across items → N FUND events → payment UI
@@ -754,8 +754,8 @@ DocRef: MVP_PLAN:§The Leaderboard (Step 8), §New User Journey (First Contact)
 [x] +฿ UI + payment flow               amount selector + payreq + WebLN/invoice + sign + POST
 [x] WebLN auto-pay (tier 1)            +฿ → WebLN.sendPayment() → sign event → POST → 4-pack cycle
 [x] Invoice/URI fallback (tier 2)      no WebLN → lightning: URI link + copy button → poll for settlement
-[ ] QR code display                    render QR from bolt11 (add qrcode library when needed)
-[ ] Wallet guide (tier 3)              no wallet → one-screen guide (Phoenix/Alby). Accept bounce-and-return.
+[x] QR code display                    render QR from bolt11 (qrcode npm library + QRCode.tsx component)
+[x] Wallet guide (tier 3)              no wallet → one-screen guide (Phoenix/Alby). Accept bounce-and-return.
 [ ] Fortify abandonment tracking        measure clicks → completions per tier. Fiat bridge trigger: >60% abandon.
 
 ### Bitcoin integrity anchor (L7 — pulled into MVP)
@@ -1072,12 +1072,12 @@ Code has no author fields in AnnouncePayload.
 
 ## Materializer Endpoints — New
 
-[ ] GET /host/roi                        apps/coordinator/src/views/materializer.ts
+[x] GET /host/roi                        apps/coordinator/src/views/graph.ts
     - top earning CIDs last 24h (from EpochSummaryRecords)
     - estimated sats/day if mirror top 20 CIDs (from bounty feed + drain rates)
     - median payout time (from settlement timestamps)
     - host conversion surface: "how much will I earn?"
-[ ] GET /market/quote                    apps/coordinator/src/views/materializer.ts (already [ ] in Sprint 7d)
+[x] GET /market/quote                    apps/coordinator/src/views/graph.ts (moved from materializer.ts)
     - supply curve from host min_bounty_sats thresholds
     - outcome quotes: "N replicas for ~M days at X sats"
     - preserve tier pricing: Gold/Silver/Bronze sats estimates
@@ -1086,15 +1086,15 @@ Code has no author fields in AnnouncePayload.
 
 ## Materializer Endpoints — Graph (prerequisite for triangle labels)
 
-[ ] Body edge extraction at ingest       apps/coordinator/src/views/materializer.ts
+[x] Body edge extraction at ingest       apps/coordinator/src/views/graph.ts
     - parse [ref:bytes32] tokens from POST/ANNOUNCE bodies on POST /event
     - Prisma model: BodyEdge { source_event_id, target_ref, edge_sats }
     - index: (target_ref) for inbound citation queries
     - BLOCKS: triangle labels, graph importance, orphan score, cluster view
-[ ] Graph importance computation         packages/physics or apps/coordinator
+[x] Graph importance computation         apps/coordinator/src/views/graph.ts
     - weighted PageRank over citation DAG (ref + body + list edges)
     - incremental recompute on new events
-[ ] Importance triangle labels           apps/coordinator/src/views/materializer.ts
+[ ] Importance triangle labels           apps/coordinator/src/views/graph.ts (data layer ready, UI pending)
     - compute percentile ranks: pool (Commitment), receipts/epoch (Demand), PageRank (Centrality)
     - assign labels: Underpriced (high centrality + low pool), Flash (high demand + low pool),
       Endowed (high pool + low demand + low centrality)
@@ -1446,6 +1446,69 @@ Phase C (post-launch, when host count > 10):
     - Clearinghouse guarantee enforcement (re-matching from bond pool)
     - Premium (bonded OFFER) vs commodity (spot) host tiers in clearing
     - Full orderbook display in UI (preserve demand + OFFER supply)
+
+
+================================================================================
+SPRINT A IMPLEMENTATION (2026-02-10)
+================================================================================
+
+[x] QR code for Lightning payments      apps/web: qrcode npm dep + QRCode.tsx component
+    - LightningQR: renders BOLT11 invoice as scannable QR (data-URL PNG, tap-to-pay link)
+[x] Fortify modal/sheet for mobile      FortifyButton.tsx rewritten as bottom-sheet modal
+    - mobile: slides up from bottom; desktop: centered dialog
+    - payment pending: spinner + auto-poll 3s, no manual button
+    - QR code rendered in paying state
+[x] Tier labels in FortifyButton        Gold (฿21m) / Silver (฿21k) / Bronze (฿210)
+    - estimated replicas + runway per tier
+    - custom amount input below presets
+    - internally still FUND events (real PRESERVE in Sprint F)
+[x] Inline +฿ on leaderboard rows       FortifyButton inline mode → links to /v/ref#fortify
+[x] Sustainability estimate              instrument cluster: "funded ~Nmo" (from drain_rate)
+[x] Widget deployment validation         stale-while-revalidate=300 cache headers on both widgets
+    - widgets handle coordinator-unreachable gracefully (empty data / default values)
+    - embed copy button already on proof page
+[x] Wallet guide                         /wallet-guide page: Phoenix, Alby, Zeus recommendations
+    - linked from Fortify modal "no wallet?" hint
+    Total: 293/293 tests pass + Next.js build clean + coordinator tsc clean
+
+
+================================================================================
+SPRINT C IMPLEMENTATION (2026-02-10)
+================================================================================
+
+[x] BodyEdge Prisma model               body_edge table: source_event_id, source_ref, target_ref, edge_sats, source_kind
+    - indexes: (target_ref), (source_event_id), (source_ref)
+[x] GraphImportance Prisma model         graph_importance table: ref (PK), score, inbound_edges, outbound_edges, updated_epoch
+[x] Body edge extraction at ingest       apps/coordinator/src/views/graph.ts: extractBodyEdges()
+    - parses [ref:hex64] tokens from hex-encoded CBOR bodies
+    - extracts LIST items as structural edges
+    - integrated into POST /event handler (extractAndStoreEdges called after storeProtocolEvent)
+    - edge sats split evenly across edges from source event
+[x] Graph importance computation         computeGraphImportance(): weighted PageRank over citation DAG
+    - damping=0.85, max 20 iterations, convergence threshold 0.0001
+    - edges weighted by edgeSats (economic weight of citation)
+    - incremental edge count updates on new events
+[x] GET /content/:ref/signals            dual score: pool_balance × (1 + graph_importance × 1000)
+    - returns: pool_balance, graph_importance, dual_score, inbound/outbound edges,
+      host_count, funder_count, discussion_depth, runway_months, demand_receipts
+[x] GET /market/quote                    supply curve from host min_bounty_sats thresholds
+    - tier pricing estimates: Gold (10 replicas × 6mo), Silver (5 × 3mo), Bronze (3 × 1mo)
+    - median price across trusted hosts
+    - supply curve at 9 threshold points
+[x] GET /host/:pubkey/scorecard          host reputation from protocol data
+    - total_receipts, total_rewards, served_cids, spot_check_pass_rate,
+      active_epochs, availability_score
+[x] GET /author/:pubkey/profile          pseudonymous reputation
+    - total_events, announcements, posts, funds, total_funded_sats,
+      total_received_sats, unique_refs_funded, authored_refs, demand_receipts
+[x] GET /orphans                         three-part orphan score
+    - orphan_score = balance × (1/(1+connectivity)) × (1/(1+discussion_depth))
+    - "funded but under-analyzed" — analyst job board
+    - enriched with ANNOUNCE metadata
+[x] GET /host/roi                        host conversion surface
+    - top_earning_cids (last 24h), estimated_sats_per_day, total_rewards_24h,
+      median_payout_per_epoch
+    Total: 293/293 tests pass + Next.js build clean + coordinator tsc clean (1 pre-existing TS6133)
 
 
 LEGEND: [x] done  [~] partial/stub  [ ] not started

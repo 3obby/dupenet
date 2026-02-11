@@ -45,6 +45,15 @@ import {
   feedRecent,
   getThread,
 } from "./views/materializer.js";
+import {
+  extractAndStoreEdges,
+  getSignals,
+  getOrphans,
+  getHostScorecard,
+  getAuthorProfile,
+  getMarketQuote,
+  getHostROI,
+} from "./views/graph.js";
 import { appendEvent, getEventCount } from "./event-log/writer.js";
 import {
   TIP_EVENT,
@@ -404,6 +413,23 @@ export async function buildApp(deps?: CoordinatorDeps) {
       sats: event.sats,
       ts: event.ts,
       sig: event.sig,
+    });
+
+    // ── Body edge extraction (citation graph) ─────────────────────
+    // Parse [ref:bytes32] tokens from body, extract LIST items.
+    // DocRef: MVP_PLAN:§Signal Layer, §Reference Graph
+    let decodedBody: unknown;
+    try {
+      if (event.body) decodedBody = decodeEventBody(event.body);
+    } catch { /* non-fatal */ }
+
+    await extractAndStoreEdges(prisma, {
+      eventId,
+      kind: event.kind,
+      ref: event.ref,
+      body: event.body,
+      sats: event.sats,
+      decodedBody,
     });
 
     return reply.send({
@@ -920,6 +946,76 @@ export async function buildApp(deps?: CoordinatorDeps) {
       return reply.send(thread);
     },
   );
+
+  // ── Materializer: Content Signals ───────────────────────────────
+  // GET /content/:ref/signals — dual score (direct pool + graph importance)
+  // DocRef: MVP_PLAN:§Signal Layer
+  app.get<{ Params: { ref: string } }>(
+    "/content/:ref/signals",
+    async (req, reply) => {
+      const { ref } = req.params;
+      if (!/^[0-9a-f]{64}$/.test(ref)) {
+        return reply.status(422).send({ error: "invalid_ref" });
+      }
+      const signals = await getSignals(prisma, ref);
+      return reply.send(signals);
+    },
+  );
+
+  // ── Materializer: Orphans ──────────────────────────────────────
+  // GET /orphans — funded but under-analyzed content
+  app.get("/orphans", async (req, reply) => {
+    const q = req.query as Record<string, string>;
+    const limit = Math.min(parseInt(q.limit ?? "20", 10), 100);
+    const minBalance = parseInt(q.min_balance ?? "100", 10);
+    const items = await getOrphans(prisma, { limit, minBalance });
+    return reply.send({ items, timestamp: Date.now() });
+  });
+
+  // ── Materializer: Host Scorecard ───────────────────────────────
+  // GET /host/:pubkey/scorecard — host reputation
+  app.get<{ Params: { pubkey: string } }>(
+    "/host/:pubkey/scorecard",
+    async (req, reply) => {
+      const { pubkey } = req.params;
+      if (!/^[0-9a-f]{64}$/.test(pubkey)) {
+        return reply.status(422).send({ error: "invalid_pubkey" });
+      }
+      const scorecard = await getHostScorecard(prisma, pubkey);
+      if (!scorecard) {
+        return reply.status(404).send({ error: "host_not_found" });
+      }
+      return reply.send(scorecard);
+    },
+  );
+
+  // ── Materializer: Author Profile ───────────────────────────────
+  // GET /author/:pubkey/profile — pseudonymous reputation
+  app.get<{ Params: { pubkey: string } }>(
+    "/author/:pubkey/profile",
+    async (req, reply) => {
+      const { pubkey } = req.params;
+      if (!/^[0-9a-f]{64}$/.test(pubkey)) {
+        return reply.status(422).send({ error: "invalid_pubkey" });
+      }
+      const profile = await getAuthorProfile(prisma, pubkey);
+      return reply.send(profile);
+    },
+  );
+
+  // ── Materializer: Market Quote ─────────────────────────────────
+  // GET /market/quote — supply curve + tier pricing from host directory
+  app.get("/market/quote", async (_req, reply) => {
+    const quote = await getMarketQuote(prisma);
+    return reply.send(quote);
+  });
+
+  // ── Materializer: Host ROI ─────────────────────────────────────
+  // GET /host/roi — host conversion surface ("how much will I earn?")
+  app.get("/host/roi", async (_req, reply) => {
+    const roi = await getHostROI(prisma);
+    return reply.send(roi);
+  });
 
   // ── Health ─────────────────────────────────────────────────────
   app.get("/health", async (_req, reply) => {

@@ -148,6 +148,39 @@ model PinContract {
   @@map("pin_contract")
 }
 
+// ── Body Edges (citation graph from inline [ref:bytes32] tokens) ────
+// DocRef: MVP_PLAN:§Signal Layer, §Reference Graph
+// Extracted at event ingest: parse bodies for [ref:hex64] tokens.
+// These form the citation DAG that drives graph importance (PageRank).
+
+model BodyEdge {
+  id              Int    @id @default(autoincrement())
+  sourceEventId   String @map("source_event_id") // event_id that contains the citation
+  sourceRef       String @map("source_ref")      // ref field of the source event
+  targetRef       String @map("target_ref")      // bytes32 being cited
+  edgeSats        Int    @default(0) @map("edge_sats") // sats from source event (split across edges)
+  sourceKind      Int    @default(0) @map("source_kind") // kind of source event
+  createdAt       DateTime @default(now())
+
+  @@index([targetRef])
+  @@index([sourceEventId])
+  @@index([sourceRef])
+  @@map("body_edge")
+}
+
+// ── Graph Importance (materialized PageRank scores) ─────────────────
+// Recomputed incrementally when new edges arrive.
+
+model GraphImportance {
+  ref             String @id // bytes32 — pool key / event ref
+  score           Float  @default(0) // PageRank-style importance score
+  inboundEdges    Int    @default(0) @map("inbound_edges")
+  outboundEdges   Int    @default(0) @map("outbound_edges")
+  updatedEpoch    Int    @default(0) @map("updated_epoch")
+
+  @@map("graph_importance")
+}
+
 // ── Spot Checks (availability monitoring) ──────────────────────────
 
 model SpotCheck {
