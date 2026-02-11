@@ -3,7 +3,9 @@
  *
  * GET /asset → GET /file → GET /block × N → reassemble → write.
  * Supports free mode (dev gateways) and L402 paid fetch.
- * DocRef: MVP_PLAN:§Fetch Flow
+ * Multi-host: queries directory for hosts serving the CID, picks cheapest,
+ * falls back to configured gateways with retry-with-rotation.
+ * DocRef: MVP_PLAN:§Fetch Flow, §Sprint B — CLI host selection
  */
 
 import { writeFile } from "node:fs/promises";
@@ -16,7 +18,7 @@ import {
   type CID,
 } from "@dupenet/physics";
 import type { CliConfig } from "../lib/config.js";
-import { httpGet, httpGetBytes } from "../lib/http.js";
+import { httpGetBytes, httpGetBytesRotate, httpGetRotate } from "../lib/http.js";
 
 interface FetchOptions {
   output?: string;
@@ -30,6 +32,73 @@ interface L402Challenge {
   expires_at: number;
 }
 
+interface DirectoryHost {
+  pubkey: string;
+  endpoint: string;
+  status: string;
+  pricing?: { min_request_sats: number; sats_per_gb: number };
+  availability_score?: number;
+}
+
+/**
+ * Resolve gateway endpoints for a fetch operation.
+ * Strategy: query directory for hosts serving this CID → sort by price →
+ * combine with configured gateways (deduped). Falls back gracefully if
+ * the directory is unreachable.
+ */
+async function resolveGateways(
+  _cid: string,
+  config: CliConfig,
+): Promise<string[]> {
+  const configuredGateways = config.gateways.length > 0
+    ? config.gateways
+    : [config.gateway];
+
+  // Try to discover hosts from the directory
+  try {
+    const dir = await httpGetRotate<{ hosts: DirectoryHost[] }>(
+      config.coordinators.length > 0 ? config.coordinators : [config.coordinator],
+      "/directory",
+    );
+
+    // Filter to TRUSTED hosts with endpoints
+    const trusted = dir.hosts.filter(
+      (h) => h.status === "TRUSTED" && h.endpoint,
+    );
+
+    if (trusted.length > 0) {
+      // Sort by cheapest price (min_request_sats)
+      trusted.sort((a, b) => {
+        const pa = a.pricing?.min_request_sats ?? Infinity;
+        const pb = b.pricing?.min_request_sats ?? Infinity;
+        return pa - pb;
+      });
+
+      const directoryEndpoints = trusted.map((h) => h.endpoint);
+
+      // Merge: directory hosts first (they're verified), then config gateways as fallback
+      const seen = new Set<string>();
+      const merged: string[] = [];
+      for (const ep of [...directoryEndpoints, ...configuredGateways]) {
+        const normalized = ep.replace(/\/$/, "");
+        if (!seen.has(normalized)) {
+          seen.add(normalized);
+          merged.push(normalized);
+        }
+      }
+
+      if (merged.length > 1) {
+        console.log(`  ${merged.length} gateway(s) available (${merged.map(u => new URL(u).hostname).join(", ")})`);
+      }
+      return merged;
+    }
+  } catch {
+    // Directory unreachable — fall back to configured gateways
+  }
+
+  return configuredGateways;
+}
+
 export async function fetchCommand(
   cid: string,
   config: CliConfig,
@@ -40,24 +109,28 @@ export async function fetchCommand(
     throw new Error(`Invalid CID: must be 64-char hex. Got: ${cid}`);
   }
 
+  // Resolve gateway endpoints (directory + config, deduped)
+  const gateways = await resolveGateways(cid, config);
+
   // Try as asset_root first (multi-block file)
   let asset: AssetRootV1 | null = null;
   try {
-    asset = await httpGet<AssetRootV1>(`${config.gateway}/asset/${cid}`);
+    asset = await httpGetRotate<AssetRootV1>(gateways, `/asset/${cid}`);
   } catch {
     // Not an asset — try as raw block
   }
 
   if (asset) {
-    await fetchAsset(cid, asset, config, opts);
+    await fetchAsset(cid, asset, gateways, config, opts);
   } else {
-    await fetchRawBlock(cid, config, opts);
+    await fetchRawBlock(cid, gateways, config, opts);
   }
 }
 
 async function fetchAsset(
   assetCid: string,
   asset: AssetRootV1,
+  gateways: string[],
   config: CliConfig,
   opts: FetchOptions,
 ): Promise<void> {
@@ -66,7 +139,7 @@ async function fetchAsset(
   console.log(`  kind: ${asset.kind}, size: ${formatSize(size)}${mime ? `, mime: ${mime}` : ""}`);
 
   // Get file manifest
-  const manifest = await httpGet<FileManifestV1>(`${config.gateway}/file/${file_root}`);
+  const manifest = await httpGetRotate<FileManifestV1>(gateways, `/file/${file_root}`);
   console.log(`  ${manifest.blocks.length} block(s), file_root: ${file_root}`);
 
   // Fetch all blocks
@@ -74,7 +147,7 @@ async function fetchAsset(
   let fetched = 0;
 
   for (const blockCid of manifest.blocks) {
-    const bytes = await fetchBlock(blockCid, config, opts.free);
+    const bytes = await fetchBlock(blockCid, gateways, config, opts.free);
     blockMap.set(blockCid, bytes);
     fetched++;
     const pct = Math.round((fetched / manifest.blocks.length) * 100);
@@ -102,11 +175,12 @@ async function fetchAsset(
 
 async function fetchRawBlock(
   cid: string,
+  gateways: string[],
   config: CliConfig,
   opts: FetchOptions,
 ): Promise<void> {
   console.log(`Fetching raw block: ${cid}`);
-  const bytes = await fetchBlock(cid, config, opts.free);
+  const bytes = await fetchBlock(cid, gateways, config, opts.free);
 
   if (!verifyCid(cid, bytes)) {
     throw new Error(`Integrity check failed: block hash does not match CID`);
@@ -118,16 +192,17 @@ async function fetchRawBlock(
   console.log(`Saved: ${outPath}`);
 }
 
-/** Fetch a single block, handling L402 if needed. */
+/** Fetch a single block, handling L402 if needed. Uses rotation across gateways. */
 async function fetchBlock(
   blockCid: string,
+  gateways: string[],
   config: CliConfig,
   free?: boolean,
 ): Promise<Uint8Array> {
-  const url = `${config.gateway}/block/${blockCid}`;
+  const path = `/block/${blockCid}`;
 
-  // First attempt
-  const result = await httpGetBytes(url);
+  // First attempt — with rotation across all gateways
+  const result = await httpGetBytesRotate(gateways, path);
 
   if (result.status === 200) {
     return result.bytes;
@@ -147,11 +222,12 @@ async function fetchBlock(
       `\n  L402: ${challenge.price_sats} sats — invoice: ${challenge.invoice.slice(0, 40)}...`,
     );
 
-    // Try to pay via LND
+    // Try to pay via LND — use the same gateway that issued the invoice
+    const payUrl = `${result.usedEndpoint}${path}`;
     if (config.lndHost) {
       const preimage = await payInvoice(config, challenge.invoice);
-      // Retry with preimage
-      const paid = await httpGetBytes(url, {
+      // Retry with preimage on the same endpoint that issued the invoice
+      const paid = await httpGetBytes(payUrl, {
         Authorization: `L402 ${preimage}`,
       });
       if (paid.status !== 200) {

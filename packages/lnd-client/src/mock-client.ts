@@ -12,6 +12,7 @@ import type {
   CreateInvoiceParams,
   Invoice,
   InvoiceInfo,
+  WalletBalance,
 } from "./types.js";
 
 interface MockInvoice {
@@ -61,6 +62,16 @@ export class MockLndClient implements LndClient {
     }
     inv.settled = true;
     return inv.preimage;
+  }
+
+  async getBalance(): Promise<WalletBalance> {
+    return {
+      onchainConfirmedSats: 1_000_000,
+      onchainUnconfirmedSats: 0,
+      channelLocalSats: 500_000,
+      channelRemoteSats: 500_000,
+      activeChannels: 1,
+    };
   }
 
   /** Test helper: check if an invoice exists. */

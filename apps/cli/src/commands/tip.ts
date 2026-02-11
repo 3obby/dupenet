@@ -8,7 +8,7 @@
 import { signEventPayload } from "@dupenet/physics";
 import type { CliConfig } from "../lib/config.js";
 import { loadKeys } from "../lib/keys.js";
-import { httpPost } from "../lib/http.js";
+import { httpPostRotate } from "../lib/http.js";
 
 interface TipResponse {
   ok: boolean;
@@ -46,8 +46,12 @@ export async function tipCommand(
   // Sign
   const sig = await signEventPayload(keys.privateKey, tipPayload);
 
-  // POST /tip
-  const result = await httpPost<TipResponse>(`${config.coordinator}/tip`, {
+  // POST /tip — with multi-endpoint rotation
+  const coordinators = config.coordinators.length > 0
+    ? config.coordinators
+    : [config.coordinator];
+
+  const result = await httpPostRotate<TipResponse>(coordinators, "/tip", {
     ...tipPayload,
     from: keys.publicKeyHex,
     sig,

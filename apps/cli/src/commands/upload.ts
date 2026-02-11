@@ -22,7 +22,7 @@ import {
 } from "@dupenet/physics";
 import type { CliConfig } from "../lib/config.js";
 import { loadKeys } from "../lib/keys.js";
-import { httpPutBytes, httpPutJson, httpPost } from "../lib/http.js";
+import { httpPutBytes, httpPutJson, httpPostRotate } from "../lib/http.js";
 import { mimeFromPath, kindFromMime } from "../lib/mime.js";
 
 interface EventResponse {
@@ -163,7 +163,10 @@ async function uploadSingleFile(
       ts: Date.now(),
     });
 
-    const result = await httpPost<EventResponse>(`${config.coordinator}/event`, signed);
+    const coordinators = config.coordinators.length > 0
+      ? config.coordinators
+      : [config.coordinator];
+    const result = await httpPostRotate<EventResponse>(coordinators, "/event", signed);
     announceId = result.event_id;
     if (!quiet) console.log(`  announced ${announceId.slice(0, 12)}..`);
   } catch {
@@ -251,7 +254,10 @@ async function uploadDirectory(
       ts: Date.now(),
     });
 
-    const result = await httpPost<EventResponse>(`${config.coordinator}/event`, signed);
+    const coordinators = config.coordinators.length > 0
+      ? config.coordinators
+      : [config.coordinator];
+    const result = await httpPostRotate<EventResponse>(coordinators, "/event", signed);
     console.log(`collection: ${result.event_id}`);
   } catch {
     console.log(`(LIST event skipped — run 'dupenet keygen' or check coordinator)`);

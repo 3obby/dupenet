@@ -212,9 +212,9 @@ pinCmd
 
 program
   .command("config")
-  .description("Show or update CLI configuration")
-  .option("-g, --gateway <url>", "Set gateway URL")
-  .option("-c, --coordinator <url>", "Set coordinator URL")
+  .description("Show or update CLI configuration (multi-endpoint aware)")
+  .option("-g, --gateway <url>", "Set primary gateway URL")
+  .option("-c, --coordinator <url>", "Set primary coordinator URL")
   .option("--key-path <path>", "Set key file path")
   .option("--lnd-host <url>", "Set LND REST host")
   .action(async (opts: { gateway?: string; coordinator?: string; keyPath?: string; lndHost?: string }) => {

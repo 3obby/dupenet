@@ -7,7 +7,7 @@
 
 import type { AssetRootV1 } from "@dupenet/physics";
 import type { CliConfig } from "../lib/config.js";
-import { httpGet } from "../lib/http.js";
+import { httpGetRotate } from "../lib/http.js";
 
 interface BountyResponse {
   cid: string;
@@ -22,11 +22,14 @@ export async function infoCommand(
     throw new Error(`Invalid CID: must be 64-char hex. Got: ${cid}`);
   }
 
+  const gateways = config.gateways.length > 0 ? config.gateways : [config.gateway];
+  const coordinators = config.coordinators.length > 0 ? config.coordinators : [config.coordinator];
+
   console.log(`Info for ${cid}\n`);
 
   // Try to get asset info
   try {
-    const asset = await httpGet<AssetRootV1>(`${config.gateway}/asset/${cid}`);
+    const asset = await httpGetRotate<AssetRootV1>(gateways, `/asset/${cid}`);
     console.log(`  Asset:`);
     console.log(`    kind: ${asset.kind}`);
     console.log(`    size: ${formatSize(asset.original.size)}`);
@@ -42,8 +45,9 @@ export async function infoCommand(
 
   // Try to get bounty info
   try {
-    const bounty = await httpGet<BountyResponse>(
-      `${config.coordinator}/bounty/${cid}`,
+    const bounty = await httpGetRotate<BountyResponse>(
+      coordinators,
+      `/bounty/${cid}`,
     );
     console.log(`  Bounty pool:`);
     console.log(`    balance: ${bounty.balance} sats`);
@@ -53,10 +57,10 @@ export async function infoCommand(
 
   // Get pricing
   try {
-    const pricing = await httpGet<{
+    const pricing = await httpGetRotate<{
       min_request_sats: number;
       sats_per_gb: number;
-    }>(`${config.gateway}/pricing`);
+    }>(gateways, "/pricing");
     console.log(`\n  Gateway pricing:`);
     console.log(`    min_request: ${pricing.min_request_sats} sats`);
     console.log(`    per_gb:      ${pricing.sats_per_gb} sats`);

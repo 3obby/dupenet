@@ -28,9 +28,24 @@ export interface InvoiceInfo {
   state: InvoiceState;
 }
 
+export interface WalletBalance {
+  /** On-chain confirmed balance (sats). */
+  onchainConfirmedSats: number;
+  /** On-chain unconfirmed balance (sats). */
+  onchainUnconfirmedSats: number;
+  /** Total local channel balance (sats). */
+  channelLocalSats: number;
+  /** Total remote channel balance (sats). */
+  channelRemoteSats: number;
+  /** Number of active channels. */
+  activeChannels: number;
+}
+
 export interface LndClient {
   createInvoice(params: CreateInvoiceParams): Promise<Invoice>;
   lookupInvoice(paymentHash: string): Promise<InvoiceInfo>;
+  /** Get wallet balance summary (on-chain + channels). */
+  getBalance(): Promise<WalletBalance>;
 }
 
 export interface LndRestClientOptions {

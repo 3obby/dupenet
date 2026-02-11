@@ -9,7 +9,7 @@
 import { signEventPayload } from "@dupenet/physics";
 import type { CliConfig } from "../lib/config.js";
 import { loadKeys } from "../lib/keys.js";
-import { httpGet, httpPost } from "../lib/http.js";
+import { httpGetRotate, httpPostRotate } from "../lib/http.js";
 
 interface PinCreateResponse {
   ok: boolean;
@@ -71,7 +71,11 @@ export async function pinCreateCommand(
 
   const sig = await signEventPayload(keys.privateKey, pinPayload);
 
-  const result = await httpPost<PinCreateResponse>(`${config.coordinator}/pin`, {
+  const coordinators = config.coordinators.length > 0
+    ? config.coordinators
+    : [config.coordinator];
+
+  const result = await httpPostRotate<PinCreateResponse>(coordinators, "/pin", {
     ...pinPayload,
     sig,
   });
@@ -85,8 +89,13 @@ export async function pinStatusCommand(
   pinId: string,
   config: CliConfig,
 ): Promise<void> {
-  const status = await httpGet<PinStatusResponse>(
-    `${config.coordinator}/pin/${pinId}`,
+  const coordinators = config.coordinators.length > 0
+    ? config.coordinators
+    : [config.coordinator];
+
+  const status = await httpGetRotate<PinStatusResponse>(
+    coordinators,
+    `/pin/${pinId}`,
   );
 
   console.log(`Pin ${status.id}:`);
@@ -106,8 +115,13 @@ export async function pinCancelCommand(
   const cancelPayload = { pin_id: pinId, client: keys.publicKeyHex };
   const sig = await signEventPayload(keys.privateKey, cancelPayload);
 
-  const result = await httpPost<PinCancelResponse>(
-    `${config.coordinator}/pin/${pinId}/cancel`,
+  const coordinators = config.coordinators.length > 0
+    ? config.coordinators
+    : [config.coordinator];
+
+  const result = await httpPostRotate<PinCancelResponse>(
+    coordinators,
+    `/pin/${pinId}/cancel`,
     { ...cancelPayload, sig },
   );
 

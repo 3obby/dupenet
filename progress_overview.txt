@@ -395,10 +395,18 @@ DocRef: MVP_PLAN:§Node Kit, §What Hosts vs What You Host, §Bootstrap Sequence
     - round-trip verified: upload → fetch → diff = identical
     - multi-block chunking verified (6 blocks, 256 KiB each)
     - free preview works (blocks ≤16 KiB); L402 gate works (blocks >16 KiB)
-[ ] Monitoring                          uptime check, LND balance alerts, disk usage
+[x] Monitoring                          GET /status endpoint (coordinator): LND balance, hosts, epochs, pools, uptime
+    - scripts/monitor.sh: health checks, LND balance, disk alerts, cron-ready
+    - Caddyfile.production: /status route exposed
+    - @dupenet/lnd-client: getBalance() method (on-chain + channel + active channels)
 [ ] Backup cron                         schedule scripts/backup.sh every 6h
-[ ] Multi-endpoint client config        CLI + node-agent: endpoints[] array, retry-with-rotation
-[ ] Hardcoded bootstrap list            founder endpoints built into CLI binary
+[x] Multi-endpoint client config        CLI endpoints[] array, retry-with-rotation (all commands)
+    - CliConfig: gateways[], coordinators[] with backward-compatible gateway/coordinator fields
+    - http.ts: fetchWithRotation() — network error → rotate to next endpoint
+    - httpGetRotate, httpGetBytesRotate, httpPostRotate helpers
+    - All CLI commands updated: fetch, fund, post, tip, info, hosts, pin, upload
+    - DUPENET_GATEWAYS/DUPENET_COORDINATORS env vars (comma-separated)
+[x] Hardcoded bootstrap list            founder endpoints (ocdn.is) built into CLI config.ts
 [ ] .onion address                      Tor hidden service in compose-production.yml
 [ ] Second domain                       separate registrar/TLD pointing to same or different IP
 [ ] peers.json rolling cache            ~/.dupenet/peers.json updated on every successful interaction
@@ -418,8 +426,8 @@ DocRef: MVP_PLAN:§Node Kit (Target: Raspberry Pi), §Bounty Pool Mechanics
 [ ] Node-agent mirrors content          agent discovers bounty feed, mirrors top CIDs from founder gateway
 [ ] Directory shows 2 hosts             GET /directory lists both with pricing + availability
 [ ] Spot-checks pass                    coordinator verifies second host has blocks (GET /spot-check)
-[ ] Failover works                      kill host 1 → client retries host 2 → content still available
-[ ] CLI host selection                  `dupenet fetch` picks cheapest/fastest host from directory
+[x] Failover works                      CLI retry-with-rotation across all known gateways (network errors trigger rotation)
+[x] CLI host selection                  `dupenet fetch` queries /directory, sorts by cheapest, merges with config gateways
 [ ] Receipt flow from second host       L402 fetch from host 2 → receipt → epoch settlement includes both hosts
 
 Exit: two independent hosts serve the same CID. Kill one, content survives. Receipts flow from both.

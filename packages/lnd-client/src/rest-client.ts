@@ -15,6 +15,7 @@ import type {
   InvoiceInfo,
   InvoiceState,
   LndRestClientOptions,
+  WalletBalance,
 } from "./types.js";
 
 export class LndRestClient implements LndClient {
@@ -107,6 +108,39 @@ export class LndRestClient implements LndClient {
       valueSats: parseInt(res.value ?? "0", 10),
       amtPaidSats: parseInt(res.amt_paid_sat ?? "0", 10),
       state: (res.state as InvoiceState) ?? "OPEN",
+    };
+  }
+
+  async getBalance(): Promise<WalletBalance> {
+    // On-chain balance
+    const onchain = (await this.httpRequest("GET", "/v1/balance/blockchain")) as {
+      confirmed_balance?: string;
+      unconfirmed_balance?: string;
+    };
+
+    // Channel balance
+    const channels = (await this.httpRequest("GET", "/v1/balance/channels")) as {
+      local_balance?: { sat?: string };
+      remote_balance?: { sat?: string };
+    };
+
+    // Active channel count via /v1/getinfo
+    let activeChannels = 0;
+    try {
+      const info = (await this.httpRequest("GET", "/v1/getinfo")) as {
+        num_active_channels?: number;
+      };
+      activeChannels = info.num_active_channels ?? 0;
+    } catch {
+      // Non-fatal — getinfo may not be available during sync
+    }
+
+    return {
+      onchainConfirmedSats: parseInt(onchain.confirmed_balance ?? "0", 10),
+      onchainUnconfirmedSats: parseInt(onchain.unconfirmed_balance ?? "0", 10),
+      channelLocalSats: parseInt(channels.local_balance?.sat ?? "0", 10),
+      channelRemoteSats: parseInt(channels.remote_balance?.sat ?? "0", 10),
+      activeChannels,
     };
   }
 }

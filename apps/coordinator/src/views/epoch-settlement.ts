@@ -273,7 +273,7 @@ export async function settleEpoch(
 
   for (const ab of autoBidResults) {
     // Credit pool via creditTip (applies founder royalty)
-    const { poolCredit, protocolFee } = await creditTip(prisma, ab.poolKey, ab.autoBidSats);
+    const { protocolFee } = await creditTip(prisma, ab.poolKey, ab.autoBidSats);
     totalAutoBidSats += ab.autoBidSats;
     totalAutoBidRoyaltySats += protocolFee;
     cidAutoBidMap.set(ab.poolKey, (cidAutoBidMap.get(ab.poolKey) ?? 0) + ab.autoBidSats);

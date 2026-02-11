@@ -28,6 +28,7 @@
  *   POST /hosts/check     — trigger spot-checks for all hosts
  *   GET  /hosts/:pubkey/checks — view check history + availability score
  *   GET  /health          — health check (verifies DB connectivity)
+ *   GET  /status          — deep monitoring (LND balance, hosts, epochs, pools, uptime)
  */
 
 import { fileURLToPath } from "node:url";
@@ -1029,7 +1030,99 @@ export async function buildApp(deps?: CoordinatorDeps) {
     }
   });
 
+  // ── Status (deep monitoring) ──────────────────────────────────
+  // GET /status — comprehensive system health for monitoring/alerting.
+  // Reports: uptime, LND balance, host count, epoch info, DB stats, disk.
+  // DocRef: MVP_PLAN:§Sprint B — Monitoring
+  const startedAt = Date.now();
+
+  app.get("/status", async (_req, reply) => {
+    const now = Date.now();
+    const uptimeMs = now - startedAt;
+    const epoch = currentEpoch();
+
+    // Parallel queries for efficiency
+    const [eventCount, hostData, poolStats, epochData, lndBalance] =
+      await Promise.all([
+        getEventCount(prisma).catch(() => -1),
+        prisma.host
+          .groupBy({
+            by: ["status"],
+            _count: { pubkey: true },
+          })
+          .catch(() => []),
+        prisma.bountyPool
+          .aggregate({
+            _sum: { balance: true },
+            _count: { poolKey: true },
+          })
+          .catch(() => ({ _sum: { balance: null }, _count: { poolKey: 0 } })),
+        prisma.epochSummaryRecord
+          .findFirst({ orderBy: { epoch: "desc" }, select: { epoch: true } })
+          .catch(() => null),
+        lndClient
+          ? lndClient.getBalance().catch((err: unknown) => ({
+              error: err instanceof Error ? err.message : "lnd_unavailable",
+            }))
+          : null,
+      ]);
+
+    // Host breakdown by status
+    const hosts: Record<string, number> = {};
+    let totalHosts = 0;
+    for (const row of hostData) {
+      hosts[row.status] = row._count.pubkey;
+      totalHosts += row._count.pubkey;
+    }
+
+    return reply.send({
+      status: "ok",
+      timestamp: now,
+      uptime_ms: uptimeMs,
+      uptime_human: humanDuration(uptimeMs),
+      epoch: {
+        current: epoch,
+        last_settled: epochData?.epoch ?? null,
+        behind: epochData ? epoch - epochData.epoch - 1 : null,
+      },
+      events: eventCount,
+      hosts: {
+        total: totalHosts,
+        by_status: hosts,
+      },
+      pools: {
+        count: poolStats._count.poolKey,
+        total_balance_sats: Number(poolStats._sum.balance ?? 0n),
+      },
+      lnd: lndBalance
+        ? "error" in lndBalance
+          ? { status: "error", detail: lndBalance.error }
+          : {
+              status: "ok",
+              onchain_confirmed_sats: lndBalance.onchainConfirmedSats,
+              onchain_unconfirmed_sats: lndBalance.onchainUnconfirmedSats,
+              channel_local_sats: lndBalance.channelLocalSats,
+              channel_remote_sats: lndBalance.channelRemoteSats,
+              active_channels: lndBalance.activeChannels,
+            }
+        : { status: "not_configured" },
+    });
+  });
+
   return app;
+}
+
+/** Format milliseconds as human-readable duration (e.g. "3d 4h 12m"). */
+function humanDuration(ms: number): string {
+  const s = Math.floor(ms / 1000);
+  const d = Math.floor(s / 86400);
+  const h = Math.floor((s % 86400) / 3600);
+  const m = Math.floor((s % 3600) / 60);
+  const parts: string[] = [];
+  if (d > 0) parts.push(`${d}d`);
+  if (h > 0) parts.push(`${h}h`);
+  if (m > 0 || parts.length === 0) parts.push(`${m}m`);
+  return parts.join(" ");
 }
 
 // Run if executed directly (not when imported in tests)

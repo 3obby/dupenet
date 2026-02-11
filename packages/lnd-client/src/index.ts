@@ -13,6 +13,7 @@ export type {
   InvoiceInfo,
   InvoiceState,
   LndRestClientOptions,
+  WalletBalance,
 } from "./types.js";
 
 export { LndRestClient } from "./rest-client.js";

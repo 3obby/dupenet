@@ -69,9 +69,12 @@ ocdn.is {
     reverse_proxy coordinator:3102
   }
 
-  # ── Health ──────────────────────────────────────────────────
+  # ── Health + Monitoring ─────────────────────────────────────
   handle /health {
     reverse_proxy gateway:3100
+  }
+  handle /status {
+    reverse_proxy coordinator:3102
   }
 
   # ── Web UI (Next.js — leaderboard, content, proof pages) ────

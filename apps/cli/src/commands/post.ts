@@ -13,7 +13,7 @@ import {
 } from "@dupenet/physics";
 import type { CliConfig } from "../lib/config.js";
 import { loadKeys } from "../lib/keys.js";
-import { httpPost } from "../lib/http.js";
+import { httpPostRotate } from "../lib/http.js";
 
 interface EventResponse {
   ok: boolean;
@@ -53,8 +53,13 @@ export async function postCommand(
     ts: Date.now(),
   });
 
-  const result = await httpPost<EventResponse>(
-    `${config.coordinator}/event`,
+  const coordinators = config.coordinators.length > 0
+    ? config.coordinators
+    : [config.coordinator];
+
+  const result = await httpPostRotate<EventResponse>(
+    coordinators,
+    "/event",
     signed,
   );
 
