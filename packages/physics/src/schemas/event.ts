@@ -60,6 +60,18 @@ export type AccessMode = Static<typeof AccessMode>;
  * AnnouncePayload — kind=ANNOUNCE (0x02).
  * Announce an asset with human-readable metadata.
  * ref = asset_root CID.
+ *
+ * Author attribution:
+ *   author_pubkey — Ed25519 pubkey (hex) of the content creator.
+ *     Distinct from `from` (which is the event signer / uploader).
+ *     Allows: A uploads content on behalf of B (B = author, A = publisher).
+ *     If omitted, `from` is assumed to be the author.
+ *
+ *   revshare_bps — basis points (0–10000) of third-party revenue shared with author.
+ *     Only third-party payments qualify (events where from != author_pubkey).
+ *     Materializer-enforced convention, not protocol.
+ *     Default 0 = no revenue share.
+ *     DocRef: MVP_PLAN:§Author Revenue, §Dual-Mode Host Economics
  */
 export const AnnouncePayload = Type.Object(
   {
@@ -70,6 +82,10 @@ export const AnnouncePayload = Type.Object(
     size: Type.Optional(Type.Integer({ minimum: 0 })),
     /** "open" = serve without L402 (hosts earn from pool only). "paid" = L402 required. */
     access: Type.Optional(AccessMode),
+    /** Content author's Ed25519 pubkey (hex). If omitted, `from` is the author. */
+    author_pubkey: Type.Optional(Type.String({ pattern: "^[0-9a-f]{64}$" })),
+    /** Revenue share in basis points (0–10000). Third-party payments only. */
+    revshare_bps: Type.Optional(Type.Integer({ minimum: 0, maximum: 10000 })),
   },
   { additionalProperties: false },
 );

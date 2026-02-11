@@ -50,11 +50,23 @@ program
   .option("--title <title>", "Content title (default: filename)")
   .option("--tags <tags>", "Comma-separated tags")
   .option("--access <mode>", "Access mode: open|paid (default: paid)")
-  .action(async (path: string, opts: { gateway?: string; coordinator?: string; title?: string; tags?: string; access?: string }) => {
+  .option("--author-pubkey <hex>", "Author's Ed25519 pubkey (if different from uploader)")
+  .option("--revshare <bps>", "Revenue share to author in basis points (0–10000)")
+  .action(async (path: string, opts: { gateway?: string; coordinator?: string; title?: string; tags?: string; access?: string; authorPubkey?: string; revshare?: string }) => {
     const config = await loadConfig();
     if (opts.gateway) config.gateway = opts.gateway;
     if (opts.coordinator) config.coordinator = opts.coordinator;
-    await uploadCommand(path, config, { title: opts.title, tags: opts.tags, access: opts.access });
+    const revshare = opts.revshare ? parseInt(opts.revshare, 10) : undefined;
+    if (revshare !== undefined && (isNaN(revshare) || revshare < 0 || revshare > 10000)) {
+      throw new Error("--revshare must be 0–10000 basis points (100 = 1%)");
+    }
+    await uploadCommand(path, config, {
+      title: opts.title,
+      tags: opts.tags,
+      access: opts.access,
+      authorPubkey: opts.authorPubkey,
+      revshare,
+    });
   });
 
 // ── fetch ───────────────────────────────────────────────────────────

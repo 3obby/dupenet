@@ -34,6 +34,10 @@ export interface UploadOpts {
   title?: string;
   tags?: string;
   access?: string;
+  /** Author's Ed25519 pubkey (hex). If omitted, uploader's key is the author. */
+  authorPubkey?: string;
+  /** Revenue share in basis points (0–10000). Third-party payments only. */
+  revshare?: number;
 }
 
 // ── Known MIME extensions for directory filter ─────────────────────
@@ -145,6 +149,8 @@ async function uploadSingleFile(
       size: fileBytes.length,
       access: opts.access ?? "paid",
       ...(opts.tags ? { tags: opts.tags.split(",").map((t) => t.trim()) } : {}),
+      ...(opts.authorPubkey ? { author_pubkey: opts.authorPubkey } : {}),
+      ...(opts.revshare !== undefined && opts.revshare > 0 ? { revshare_bps: opts.revshare } : {}),
     });
 
     const signed = await signEvent(keys.privateKey, {

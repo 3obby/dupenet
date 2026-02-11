@@ -59,9 +59,15 @@ export default async function ContentPage({
   const mime = meta.mime as string | undefined;
   const size = meta.size as number | undefined;
   const access = (meta.access as string) ?? "paid";
+  const authorPubkey = meta.author_pubkey as string | undefined;
+  const revshareBps = meta.revshare_bps as number | undefined;
   const from = announce?.from ?? list?.from;
   const ts = announce?.ts ?? list?.ts;
   const threadCount = thread ? countReplies(thread) : 0;
+
+  // Author display: author_pubkey if set, otherwise from (uploader = author)
+  const authorHex = authorPubkey ?? from;
+  const isThirdPartyUpload = authorPubkey && from && authorPubkey !== from;
 
   // Fetch content preview for ALL content (open and paid)
   const preview = await fetchContentPreview(ref, mime, size);
@@ -82,11 +88,24 @@ export default async function ContentPage({
       <hr />
 
       <b>{title}</b>
-      {from && (
+      {authorHex && (
         <>
           <br />
           <span className="t">
-            {shortHex(from)}{ts ? ` \u00b7 ${fmtDate(ts)}` : ""}
+            {isThirdPartyUpload ? "by " : ""}
+            {shortHex(authorHex)}
+            {isThirdPartyUpload && from && (
+              <> {"\u00b7"} via {shortHex(from)}</>
+            )}
+            {ts ? ` \u00b7 ${fmtDate(ts)}` : ""}
+          </span>
+        </>
+      )}
+      {revshareBps !== undefined && revshareBps > 0 && (
+        <>
+          <br />
+          <span className="t">
+            {(revshareBps / 100).toFixed(revshareBps % 100 === 0 ? 0 : 1)}% author revshare
           </span>
         </>
       )}
