@@ -4,12 +4,16 @@
  *
  * Per-CID per-epoch cap scales logarithmically with bounty,
  * then splits among eligible hosts by score.
+ *
+ * Economics rework (2026-02-10):
+ *   - HostScore now includes payoutWeight (demand × client diversity).
+ *   - computeHostScore = payoutWeight × (W_UPTIME × uptime + W_DIVERSITY × diversity).
+ *   - W_CLIENTS removed — absorbed into payoutWeight multiplicative formula.
  */
 
 import {
   EPOCH_REWARD_PCT,
   EPOCH_REWARD_BASE_SATS,
-  W_CLIENTS,
   W_UPTIME,
   W_DIVERSITY,
   AGGREGATOR_FEE_PCT,
@@ -28,20 +32,22 @@ export function cidEpochCap(bountyBalance: number): number {
 }
 
 export interface HostScore {
-  uniqueClients: number;
+  /** Smooth payout weight: totalProvenSats × (1 + log2(uniqueClients)). */
+  payoutWeight: number;
   uptimeRatio: number; // 0.0 - 1.0
   diversityContribution: number; // 0.0 - 1.0
 }
 
 /**
  * Compute a host's weighted score for reward distribution.
+ *
+ * score = payoutWeight × (W_UPTIME × uptimeRatio + W_DIVERSITY × diversityContribution)
+ *
+ * The payoutWeight is the demand signal (proven sats × client diversity bonus).
+ * The quality multiplier (uptime + geographic diversity) scales it.
  */
 export function computeHostScore(s: HostScore): number {
-  return (
-    W_CLIENTS * s.uniqueClients +
-    W_UPTIME * s.uptimeRatio +
-    W_DIVERSITY * s.diversityContribution
-  );
+  return s.payoutWeight * (W_UPTIME * s.uptimeRatio + W_DIVERSITY * s.diversityContribution);
 }
 
 /**

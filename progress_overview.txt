@@ -107,17 +107,18 @@ COORDINATOR — PERSISTENCE + AGGREGATION
 [x] Event log persistence               append-only Postgres via prisma.event.create
 [x] POST /receipt/submit                validates via receipt-sdk, checks epoch range + replay, stores in Prisma
 [x] Receipt validation pipeline         verifyReceiptV2 checks client_sig, PoW, receipt_token against mint pubkeys
-[x] Epoch aggregation (physics)         aggregateReceipts(), isPayoutEligible() — pure receipt grouping
-    - NOTE: 5/3 hard threshold replaced with smooth payout_weight multiplier (see §Economics Rework below)
-    - isPayoutEligible() now requires receipt_count >= 1 AND total_proven_sats > 0
-    - payout_weight = total_proven_sats * (1 + log2(unique_clients)) — CODE UPDATE PENDING
+[x] Epoch aggregation (physics)         aggregateReceipts(), isPayoutEligible(), computePayoutWeight()
+    - smooth payout_weight: totalProvenSats * (1 + log2(uniqueClients))
+    - isPayoutEligible: receipt_count >= 1 AND totalProvenSats > 0
 [x] Epoch settlement (coordinator)      settleEpoch() — aggregate receipts, compute payouts, drain bounty, persist EpochSummary
 [x] POST /epoch/settle                  validates epoch is closed, calls settleEpoch(), idempotent (no double-spend)
 [x] GET /epoch/summary/:epoch           returns settlement results for a given epoch
 [x] Payout execution                    distributeRewards() called by settleEpoch(), rewards split by host score
 [x] Bounty drain                        cidEpochCap() limits per-epoch drain, debitPayout() debits pool
 [x] Aggregator fee                      3% deducted from cap before host distribution
-[x] Epoch settlement tests              8 coordinator tests (mock Prisma) + 12 physics aggregation tests
+[x] Egress royalty                      1% of proven L402 egress, deducted at settlement
+[x] Auto-bids in settlement            2% of proven egress auto-credited to pool (with royalty)
+[x] Epoch settlement tests              15 coordinator tests (mock Prisma) + 30 physics aggregation tests
 [x] Epoch boundary trigger              createEpochScheduler() auto-settles closed epochs; configurable interval + spot-checks
 [x] Signature verification on events    Ed25519 verify on POST /tip and POST /host/register; rejects forged/missing sigs
 
@@ -290,6 +291,24 @@ Plan constants still missing from code (add during relevant sprint):
 [x] dupenet post <ref> <text>         apps/cli/src/commands/post.ts — POST /event kind=POST, --sats flag
 [x] dupenet upload + ANNOUNCE         upload.ts now emits ANNOUNCE event with --title/--tags/--access
     Total: 221/221 tests pass + CLI tsc clean + Next.js build clean
+
+## Economics Rework Implementation (2026-02-10)
+
+[x] Smooth payout multiplier          epoch-aggregation.ts: computePayoutWeight(), updated isPayoutEligible()
+[x] Egress royalty (1%)               royalty.ts: computeEgressRoyalty(), settlement deduction
+[x] Multiplicative host score         reward.ts: payoutWeight × (W_UPTIME × uptime + W_DIVERSITY × diversity)
+[x] Settlement egress tracking        epoch-settlement.ts: totalEgressRoyaltySats, totalProvenEgressSats
+    Total: 228/228 tests pass (was 203, +25 new economics tests)
+
+## Auto-Bid System Implementation (2026-02-10)
+
+[x] Auto-bid constants                constants.ts: AUTO_BID_PCT=0.02, CLEARING_SPREAD_PCT=0.03, preserve tiers
+[x] Auto-bid physics module           auto-bid.ts: computeAutoBid, computeEpochAutoBids, sustainabilityRatio
+[x] Settlement integration            epoch-settlement.ts: auto-bids computed + credited after rewards
+[x] Prisma schema update              EpochSummaryRecord: autoBidSats, egressRoyaltySats fields
+[x] Physics tests (28 new)            auto-bid.test.ts: single/multi-CID, rounding, sustainability
+[x] Coordinator tests (7 new)         epoch-settlement.test.ts: auto-bid credits, royalty, event log
+    Total: 293/293 tests pass + Next.js build clean (was 228)
 
 
 ================================================================================
@@ -540,6 +559,9 @@ All endpoints are materializer conventions — other materializers may offer dif
 [ ] GET /content/:ref/signals           content resilience + graph importance (dual score)
 [ ] GET /author/:pubkey/profile         pseudonymous reputation (events by pubkey + demand on their content)
 [ ] GET /market/quote                   supply curve from host min_bounty_sats thresholds
+    - also: preserve tier pricing (Gold/Silver/Bronze sats estimates)
+    - also: auto-bid contribution estimate per CID
+    - consumed by PreserveButton for tier selector UX
 [x] GET /thread/:event_id               thread tree: recursive ref-chain resolution from POST events
     - depth-limited (default 10), builds in-memory tree, sorted oldest-first
 [ ] GET /cluster/:ref?hops=N            graph neighborhood: all nodes within N hops via ref/body/list edges
@@ -982,17 +1004,17 @@ mvp_plan.md now specifies EGRESS_ROYALTY_PCT = 0.01 (flat 1% of L402 egress fees
 deducted at epoch settlement, credited to FOUNDER_PUBKEY). Code has no egress
 royalty path.
 
-[ ] EGRESS_ROYALTY_PCT constant          packages/physics/src/constants.ts — add 0.01
-[ ] Egress royalty function              packages/physics/src/royalty.ts — computeEgressRoyalty(egress_sats)
+[x] EGRESS_ROYALTY_PCT constant          packages/physics/src/constants.ts — 0.01
+[x] Egress royalty function              packages/physics/src/royalty.ts — computeEgressRoyalty(egress_sats)
     - flat 1%, no taper (distinct from pool credit royalty)
     - deducted from proven egress at settlement (receipt_token binds price_sats)
-[ ] Settlement egress deduction          apps/coordinator/src/views/epoch-settlement.ts
-    - settleEpoch() must sum proven egress per host per CID per epoch
-    - deduct 1% before crediting host share
-    - credit FOUNDER_PUBKEY with deducted amount
-[ ] Egress royalty tests                 packages/physics/test/ — new test file
+[x] Settlement egress deduction          apps/coordinator/src/views/epoch-settlement.ts
+    - settleEpoch() sums proven egress per host per CID per epoch
+    - deducts 1% before crediting host share
+    - credits FOUNDER_PUBKEY with deducted amount
+[x] Egress royalty tests                 packages/physics/test/vectors/royalty.test.ts — 9 egress tests
     - flat 1% at all volumes, correct deduction, host receives 99%
-[ ] Coordinator settlement tests         apps/coordinator/test/ — update existing epoch settlement tests
+[x] Coordinator settlement tests         apps/coordinator/test/epoch-settlement.test.ts
     - verify egress royalty deducted alongside aggregator fee + pool credit royalty
 
 ## Protocol Rework — Smooth Payout Multiplier (replaces 5/3 hard gate)
@@ -1005,30 +1027,29 @@ Files to change:
     packages/physics/src/epoch-aggregation.ts (isPayoutEligible)
     packages/physics/src/reward.ts (computeHostScore, distributeRewards)
 
-[ ] Constants update                     packages/physics/src/constants.ts
+[x] Constants update                     packages/physics/src/constants.ts
     - RECEIPT_MIN_COUNT: 5 → 1
-    - RECEIPT_MIN_UNIQUE_CLIENTS: remove (or deprecate)
-    - W_CLIENTS: remove (absorbed into payout_weight)
+    - RECEIPT_MIN_UNIQUE_CLIENTS: removed
+    - W_CLIENTS: removed (absorbed into payout_weight)
     - W_UPTIME: 0.3 → 0.6
     - W_DIVERSITY: 0.2 → 0.4
-[ ] isPayoutEligible() rewrite           packages/physics/src/epoch-aggregation.ts
-    - old: receipt_count >= 5 AND unique_clients >= 3
+[x] isPayoutEligible() rewrite           packages/physics/src/epoch-aggregation.ts
     - new: receipt_count >= 1 AND total_proven_sats > 0
-[ ] payout_weight() function             packages/physics/src/epoch-aggregation.ts or reward.ts
+[x] payout_weight() function             packages/physics/src/epoch-aggregation.ts — computePayoutWeight()
     - payout_weight = total_proven_sats * (1 + log2(unique_clients))
-    - needs total_proven_sats field on receipt group (sum of price_sats across receipts)
-[ ] computeHostScore() rewrite           packages/physics/src/reward.ts
-    - old: W_CLIENTS * uniqueClients + W_UPTIME * uptimeRatio + W_DIVERSITY * diversityContribution
+    - totalProvenSats field on EpochGroup (sum of price_sats across receipts)
+[x] computeHostScore() rewrite           packages/physics/src/reward.ts
     - new: payout_weight * (W_UPTIME * uptimeRatio + W_DIVERSITY * diversityContribution)
-    - HostScore type may need total_proven_sats field added
-[ ] Epoch aggregation tests              packages/physics/test/ — update existing
+    - HostScore type has payoutWeight field
+[x] Epoch aggregation tests              packages/physics/test/vectors/epoch-aggregation.test.ts
     - hosts with 1 receipt / 1 client now eligible (small payout_weight)
     - hosts with 5 receipts / 5 clients get ~3.3x multiplier vs 1/1
-    - old tests asserting ineligibility below 5/3 must be updated or removed
-[ ] Score computation tests              packages/physics/test/ — update existing
-    - expected scores change due to formula rewrite
+    - smooth: no cliff at 5/3 boundary
+[x] Score computation tests              packages/physics/test/vectors/reward.test.ts
+    - expected scores match multiplicative formula
     - verify smooth scaling: no discontinuities, no cliffs
-[ ] Coordinator settlement tests         apps/coordinator/test/ — verify updated formula flows through
+[x] Coordinator settlement tests         apps/coordinator/test/epoch-settlement.test.ts
+    - updated formula flows through end-to-end
 
 ## Schema Update — AnnouncePayload Author Fields
 
@@ -1059,7 +1080,9 @@ Code has no author fields in AnnouncePayload.
 [ ] GET /market/quote                    apps/coordinator/src/views/materializer.ts (already [ ] in Sprint 7d)
     - supply curve from host min_bounty_sats thresholds
     - outcome quotes: "N replicas for ~M days at X sats"
-    - consumed by FortifyButton for goal-oriented UX
+    - preserve tier pricing: Gold/Silver/Bronze sats estimates
+    - auto-bid contribution estimate per CID
+    - consumed by PreserveButton for tier selector UX
 
 ## Materializer Endpoints — Graph (prerequisite for triangle labels)
 
@@ -1079,10 +1102,11 @@ Code has no author fields in AnnouncePayload.
 
 ## Web App — UI Changes
 
-[ ] FortifyButton goal selector          apps/web/src/components/FortifyButton.tsx
-    - phase 1: show estimated outcomes alongside amounts ("210 sats ≈ ~7 days")
-    - phase 2: goal selector ("keep at N replicas for ~M days") → computes sats
-    - depends on GET /market/quote endpoint
+[ ] FortifyButton → PreserveButton      apps/web/src/components/FortifyButton.tsx
+    - phase 1: tier labels alongside amounts (Gold/Silver/Bronze presets, Custom fallback)
+    - phase 2: real PRESERVE events when escrow + clearing ships (Step 7c)
+    - depends on GET /market/quote endpoint (tier pricing)
+    - see §CLEARINGHOUSE MODEL: Web App — Preserve Tiers for full spec
 [ ] Widget deployment validation         apps/web — verify widget is deployment-ready
     - widget is [x] built (GET /api/widget, GET /api/widget/:ref)
     - validate: works as standalone iframe embed on external page
@@ -1118,16 +1142,310 @@ STALE REFERENCES (text in this file that now contradicts mvp_plan.md)
 
 Audit date: 2026-02-10. Items below are text-only fixes in this file.
 
-[ ] Line 20-22: "in-memory Map"          gateway now persists manifests/assets to disk (metadata-store.ts)
-    - update to: "returns manifest (persisted to disk via MetadataStore)"
+[x] Line 109-111: epoch aggregation      FIXED — now says smooth payout_weight, no 5/3 reference
+[x] Line 116: settlement deductions      FIXED — settlement now shows aggregator fee (3%),
+    egress royalty (1%), and auto-bids (2% of proven egress → pool) inline
+[x] Line 20-22: "in-memory Map"          FIXED — now says "persisted to disk via MetadataStore"
 [ ] Line 422: author earnings            old: "Authors self-host or earn via materializer bonuses"
     - update to include author revenue share convention (revshare_bps on ANNOUNCE)
-[ ] Line 870: RECEIPT_MIN_UNIQUE=3       old: "RECEIPT_MIN_UNIQUE=3 is a tripwire"
-    - update: RECEIPT_MIN_UNIQUE removed; client diversity is smooth log2 bonus multiplier
-[ ] Line 109-111: epoch aggregation      old: references "5/3 threshold" and eligibility gate
-    - update to reflect smooth payout_weight formula
-[ ] Line 116: AGGREGATOR_FEE_PCT         still correct (3% MVP default), but settlement now also
-    deducts EGRESS_ROYALTY_PCT (1%) — note the new deduction
+
+
+================================================================================
+MVP PLAN UPDATE: CLEARINGHOUSE MODEL + AUTO-BIDS + PRESERVE ORDERS (2026-02-10)
+================================================================================
+
+Architectural reframe applied to mvp_plan.md from CEO/strategic review.
+Core insight: founder is clearinghouse operator (exchange model), not just toll collector.
+Three new mechanisms: auto-bids from traffic, preserve orders, epoch-boundary clearing.
+All materializer-level — zero protocol changes to pools, receipts, or settlement.
+
+Sections updated in mvp_plan.md:
+    - §Core Thesis — added #9 (availability has a clearing price)
+    - §Value Capture table — added clearing spread + auto-bid rows
+    - §Fee Model Layer 4 — clearing spread as line item
+    - §Bounty Pool Mechanics §Accumulation — three entry paths (auto-bids, preserve orders, raw FUND)
+    - §Preserve Orders — new section (PreserveOrderV1, aggregation, clearing, lifecycle)
+    - §Sustainability Ratio — new subsection
+    - §Dual-Mode Host Economics — auto-bid paragraph
+    - §Signal Layer content signals — 3 new rows (organic income, sustainability ratio, preserve backers)
+    - §Event Kind table — PIN_POLICY notes evolution, kind=PRESERVE (0x0A) added
+    - §Step 8 UX — "Preserve" tiers replace raw Fortify as primary CTA
+    - §Protocol Enforcement — preserve-eligible bonded host tier
+    - §Implementation Order — Step 7c added (preservation clearing)
+    - §Constants — 7 new constants + 3 derived values
+
+What this does NOT change:
+    - Protocol (pools, receipts, settlement, epoch structure — all identical)
+    - EventV1 envelope (new kind byte 0x0A is additive)
+    - Existing FUND events (still work, still irrevocable, power-user path)
+    - Existing Pin contracts (preserve extends pins, don't replace them)
+    - Host lifecycle (base tier unchanged; preserve-eligible is opt-in addition)
+
+## Physics — New Constants + Schemas
+
+[x] AUTO_BID_PCT constant                 packages/physics/src/constants.ts — 0.02 (2%)
+    - % of L402 egress price auto-credited to pool[fetched_cid] per receipt
+    - subject to pool credit royalty (founder earns on auto-bids)
+[x] CLEARING_SPREAD_PCT constant          packages/physics/src/constants.ts — 0.03 (3%)
+    - % of matched preserve value taken by clearinghouse
+    - does not taper (product toll, not protocol toll)
+[x] Preserve constants                       packages/physics/src/constants.ts
+    - PRESERVE_ESCROW_TIMEOUT_EPOCHS = 6 (24h)
+    - PRESERVE_CANCEL_FEE_PCT = 0.02 (2%)
+    - PRESERVE_GOLD_REPLICAS = 10
+    - PRESERVE_SILVER_REPLICAS = 5
+    - PRESERVE_BRONZE_REPLICAS = 3
+[x] EVENT_KIND_PRESERVE constant             packages/physics/src/constants.ts — 0x0A
+[ ] PreservePayload TypeBox schema           packages/physics/src/schemas/event.ts
+    - tier: "GOLD" | "SILVER" | "BRONZE" | "CUSTOM"
+    - target_replicas: u8, min_jurisdictions: u8, duration_epochs: u32
+    - max_price_per_epoch: u64, auto_renew: bool
+    - materializer convention (same pattern as AnnouncePayload, HostPayload, etc.)
+[ ] PreserveOrderV1 TypeBox schema    packages/physics/src/schemas/preserve.ts (or inline in event.ts)
+    - full preserve object: cid, tier, params, funder, sig
+    - preserve_id = SHA256(canonical(PreserveOrderV1))
+[x] computeAutoBid() function             packages/physics/src/auto-bid.ts
+    - computeAutoBid(price_sats: number): number — returns floor(price_sats * AUTO_BID_PCT)
+    - computeEpochAutoBids(receipts[]): AutoBidResult[] — groups by CID, per-CID aggregation
+      reduces rounding loss vs per-receipt computation
+[x] sustainabilityRatio() function        packages/physics/src/auto-bid.ts
+    - sustainabilityRatio(organic_income, preservation_cost): number
+    - isSelfSustaining(organic_income, preservation_cost): boolean — ratio >= 1.0
+[ ] computeClearingPrice() function       packages/physics/src/clearing.ts
+    - inputs: aggregate demand (target_replicas, max_price_per_epoch), host supply count
+    - output: clearing_price_per_epoch, matched_replicas
+    - pure function, no side effects — coordinator calls at epoch boundary
+[ ] aggregatePreserves() function            packages/physics/src/clearing.ts
+    - inputs: active preserve orders for a CID
+    - output: aggregate demand profile (total target, median willingness, backer count)
+[x] Auto-bid tests                        packages/physics/test/vectors/auto-bid.test.ts (28 tests)
+    - computeAutoBid at various price points, zero price, rounding
+    - computeEpochAutoBids with multiple CIDs, multi-host grouping, zero-price skip
+    - per-CID aggregation reduces rounding loss vs per-receipt
+    - sustainabilityRatio edge cases (zero income, zero cost, exact 1.0)
+    - isSelfSustaining boundary cases
+[ ] Clearing tests                        packages/physics/test/vectors/clearing.test.ts
+    - clearing price with various demand/supply ratios
+    - aggregatePreserves: single funder, multi-funder, mixed tiers
+    - clearing spread deduction
+[ ] Preserve schema tests                    packages/physics/test/vectors/preserve.test.ts
+    - PreservePayload construct, encode, decode, canonical serialization
+    - preserve_id deterministic (same params → same ID)
+    - tier presets produce correct target_replicas / min_jurisdictions / duration
+
+## Coordinator — Auto-Bid Generation (ships with Step 8)
+
+Auto-bids are a settlement-time computation. No new endpoints needed.
+Minimal code: epoch settlement sums L402 receipts, computes auto-bids, credits pools.
+
+[x] Auto-bid in settleEpoch()             apps/coordinator/src/views/epoch-settlement.ts
+    - after receipt aggregation: computeEpochAutoBids(digests) per CID
+    - credit pool[cid] via creditTip() (applies founder royalty to auto-bids)
+    - tracks totalAutoBidSats + totalAutoBidRoyaltySats in SettlementResult
+    - EpochSummaryRecord stores per-CID autoBidSats + egressRoyaltySats
+    - event log includes total_auto_bid_sats + total_auto_bid_royalty_sats
+[x] EpochSummaryRecord schema update      apps/coordinator/prisma/schema.prisma
+    - add: autoBidSats Int @default(0)
+    - add: egressRoyaltySats Int @default(0)
+    - backward-compatible (defaults)
+[x] Auto-bid settlement tests             apps/coordinator/test/epoch-settlement.test.ts (7 new tests)
+    - verify auto-bid credits pool at 2% of proven egress (with royalty)
+    - multiple CIDs → separate auto-bid credits
+    - zero-price receipts → no auto-bids
+    - small egress rounding to 0 → no auto-bid
+    - creates pool if CID has no existing pool
+    - EpochSummaryRecord includes autoBidSats field
+    - event log includes auto-bid totals
+
+## Coordinator — Preserve Escrow + Clearing (Step 7c — post-launch iteration)
+
+Preserve orders require a new Prisma model and clearing logic. Ships after launch.
+Phased: tier UX + aggregation display first (Step 8), escrow + clearing second (7c).
+
+[ ] Prisma model: PreserveEscrow             apps/coordinator/prisma/schema.prisma
+    - id, preserveId (unique), poolKey, funder, tier, targetReplicas, minJurisdictions
+    - durationEpochs, maxPricePerEpoch, autoRenew, escrowed_sats
+    - status: ACTIVE | LAPSED | CANCELLED
+    - created_epoch, expiry_epoch
+    - indexes: (poolKey), (funder), (status, expiry_epoch)
+[ ] POST /event kind=PRESERVE handling       apps/coordinator/src/server.ts
+    - validate PreservePayload body
+    - compute escrow amount: tier-based estimate from market/quote or max_price * duration
+    - require payment (same payreq flow as FUND events)
+    - store in PreserveEscrow (sats held, NOT credited to pool yet)
+    - pool credit happens at clearing, not at preserve creation
+[ ] Epoch-boundary clearing               apps/coordinator/src/views/clearing.ts
+    - runs after settleEpoch() each epoch boundary
+    - per CID with active preserves:
+      1. aggregatePreserves() → aggregate demand profile
+      2. count serving hosts (from HostServe records)
+      3. computeClearingPrice() → clearing price
+      4. matched_value = clearing_price * min(aggregate_target, actual_hosts)
+      5. deduct CLEARING_SPREAD_PCT from matched_value → founder income
+      6. credit pool[cid] += (matched_value - spread)
+      7. deduct from each preserve order's escrowed_sats proportionally
+    - integrate into createEpochScheduler() tick cycle
+[ ] Preserve lifecycle management            apps/coordinator/src/views/clearing.ts
+    - LAPSED: preserve.expiry_epoch reached → status=LAPSED, remaining escrow stays
+      (auto_renew=true → extend, deduct new escrow; false → refund remaining)
+    - CANCELLED: POST /preserve/:id/cancel → refund unused escrow minus PRESERVE_CANCEL_FEE_PCT
+    - ESCROW_TIMEOUT: unmatched preserve after PRESERVE_ESCROW_TIMEOUT_EPOCHS → auto-refund
+[ ] POST /preserve/:id/cancel endpoint       apps/coordinator/src/server.ts
+    - validate sig from funder
+    - compute refund: remaining_escrow * (1 - PRESERVE_CANCEL_FEE_PCT)
+    - status → CANCELLED
+[ ] GET /preserve/:id endpoint               apps/coordinator/src/server.ts
+    - returns preserve status, escrow remaining, epochs remaining, matched_this_epoch
+[ ] Bid aggregation view                  apps/coordinator/src/views/clearing.ts
+    - per-CID demand profile: total backers, aggregate target replicas,
+      median willingness-to-pay, tier breakdown (N Gold, M Silver, K Bronze)
+    - cached, refreshed each epoch
+[ ] GET /market/orderbook/<cid>           apps/coordinator/src/server.ts
+    - demand side: aggregate preserve bids (backers, tiers, total committed)
+    - supply side: serving hosts count + committed hosts (preserve-eligible)
+    - clearing price estimate (if clearing ran now)
+    - extends existing GET /market/quote
+[ ] GET /content/:ref/sustainability      apps/coordinator/src/server.ts
+    - organic_auto_bid_income: avg auto-bid sats/epoch (from recent EpochSummaryRecords)
+    - preservation_cost: clearing_price * current_replicas (or estimated from drain rate)
+    - sustainability_ratio: income / cost
+    - self_sustaining: boolean (ratio >= 1.0)
+    - label: "Self-sustaining" | "Needs N more sats/epoch" | "Unfunded"
+[ ] Clearing tests                        apps/coordinator/test/clearing.test.ts
+    - single preserve → pool credit at clearing price
+    - multi-funder aggregation → correct aggregate demand
+    - clearing spread deducted → founder income
+    - preserve expiry → LAPSED + refund (auto_renew=false) or extend (true)
+    - preserve cancel → refund minus fee
+    - escrow timeout → auto-refund
+    - no active preserves → clearing is no-op
+    - clearing + auto-bids compose correctly (both credit pool in same epoch)
+[ ] Sustainability tests                  apps/coordinator/test/clearing.test.ts
+    - ratio >= 1.0 → self-sustaining
+    - ratio < 1.0 → shows deficit
+    - zero traffic → zero organic income
+    - no preserves, only auto-bids → still computes sustainability
+
+## Coordinator — Committed Hosts + OFFER Events (post-launch, materializer-level)
+
+Hosts opt into preserve fulfillment via kind=OFFER events with additional bond.
+Clearinghouse guarantees preserve outcomes; host bonds are the insurance pool
+for re-matching. Protocol's "never slash for availability" preserved —
+this is product-layer commitment, not protocol.
+
+[x] EVENT_KIND_OFFER constant              packages/physics/src/constants.ts — 0x0B
+[ ] OfferPayload TypeBox schema            packages/physics/src/schemas/event.ts
+    - replicas: u8, regions: string[], price_per_epoch: u64, bond_sats: u64, duration_epochs: u32
+    - materializer convention (supply-side counterpart to PreservePayload)
+[ ] Prisma model: HostOfferCommitment     apps/coordinator/prisma/schema.prisma
+    - hostPubkey, poolKey, bondSats, replicas, regions, pricePerEpoch
+    - committed_epochs, start_epoch
+    - status: COMMITTED | FULFILLED | FORFEITED
+[ ] POST /event kind=OFFER handling       apps/coordinator/src/server.ts
+    - validate OfferPayload, verify bond payment, store commitment
+    - supply-side orderbook: clearinghouse matches OFFERs against PRESERVEs
+[ ] Clearinghouse guarantee enforcement   apps/coordinator/src/views/clearing.ts
+    - clearinghouse guarantees preserve outcomes to funders
+    - funder's SLA is with clearinghouse, not individual hosts
+    - if committed host fails spot-checks → clearinghouse re-matches from bond pool within 1 epoch
+    - funder never sees which host failed — just "Gold tier maintained"
+    - if clearinghouse fails → degrades to best-effort spot market (same as FUND)
+[ ] Bond forfeiture on availability failure
+    - if committed host fails spot-checks during active preserve → forfeit bond
+    - bond compensates clearinghouse re-matching cost
+    - distinct from protocol slashing (this is materializer enforcement)
+[ ] Host commitment in clearing           clearing.ts — prefer OFFER-bonded hosts when matching
+    - committed hosts earn clearing price (premium)
+    - commodity hosts earn residual pool drain (baseline)
+[ ] GET /host/:pubkey/commitments         return active OFFER commitments for host
+[ ] Host commitment + OFFER tests
+
+## Web App — Preserve Tiers + Sustainability Display
+
+[ ] FortifyButton → PreserveButton       apps/web/src/components/FortifyButton.tsx (rename or extend)
+    - default CTA: tier selector (Gold / Silver / Bronze / Custom)
+    - Gold: "10 replicas, 3+ jurisdictions, ~6mo" → price from market/quote
+    - Silver: "5 replicas, 2+ jurisdictions, ~3mo" → price from market/quote
+    - Bronze: "3 replicas, ~1mo" → price from market/quote
+    - Custom: freeform sats input (raw FUND event, existing behavior)
+    - Gold/Silver/Bronze → sign PRESERVE event → payreq → payment → POST /event kind=PRESERVE
+    - Custom → existing FUND event flow (unchanged)
+    - depends on: GET /market/quote (for tier pricing), PreservePayload schema
+    - phasing: ship tier labels + estimated pricing with Step 8 (using FUND events internally)
+             upgrade to real PRESERVE events when escrow + clearing lands (Step 7c)
+[ ] Sustainability ratio in instrument    apps/web/src/app/v/[ref]/page.tsx
+    - fetch GET /content/:ref/sustainability
+    - display: "Self-sustaining ✓" (green) | "Needs N sats/epoch" (amber) | "Unfunded" (red)
+    - when self-sustaining: Preserve button text → "Already self-sustaining. Boost to Gold?"
+    - phasing: show estimated sustainability from drain_rate first (no auto-bid data until
+             settlement runs with auto-bid code), upgrade when auto-bid data flows
+[ ] Auto-bid income display               apps/web/src/app/v/[ref]/page.tsx
+    - "Generates N sats/epoch from organic traffic"
+    - alongside existing instrument cluster (฿ sats, 𓀠 funders, 💿 copies, ◷ runway)
+    - data from GET /content/:ref/sustainability endpoint
+[ ] Preserve backer display                  apps/web/src/app/v/[ref]/page.tsx
+    - "N backers · Gold tier · funded through <month>"
+    - from aggregated preserve data (GET /market/orderbook/:cid or /content/:ref/sustainability)
+    - phasing: show funder count (existing) first, add preserve tier info when preserve ships
+[ ] Leaderboard sustainability column     apps/web/src/app/page.tsx
+    - add column or indicator: self-sustaining badge per item
+    - sort option: "sort by: needs funding" (low sustainability ratio first)
+
+## Sprint 7d — Update Existing Tasks
+
+These existing Sprint 7d tasks now also serve the clearinghouse model:
+
+    GET /market/quote already planned (line 542, 1059-1062) — NOW ALSO:
+    [ ] Quote preserve tier pricing            compute sats required per tier (Gold/Silver/Bronze)
+        from supply curve + drain rate + host count. Consumed by PreserveButton.
+    [ ] Quote auto-bid contribution         show: "this CID generates ~N sats/epoch from traffic"
+        even before formal sustainability endpoint exists.
+
+    GET /content/:ref/signals already planned (line 540, 296) — NOW ALSO:
+    [ ] Include sustainability fields       organic_auto_bid_income, preservation_cost,
+        sustainability_ratio, self_sustaining, active_preserve_backers, aggregate_preserve_tier
+
+    GET /feed/funded already done (line 537-538) — FUTURE UPDATE:
+    [ ] Enrich with sustainability          add sustainability_ratio per item when auto-bid
+        data becomes available. Sort option: "needs funding."
+
+## CLI — Preserve Commands
+
+[ ] `dupenet preserve <ref> <tier>`          apps/cli/src/commands/preserve.ts
+    - POST /event kind=PRESERVE with tier preset (gold/silver/bronze)
+    - --duration, --replicas, --jurisdictions for custom
+    - --auto-renew flag
+    - payreq → payment → POST /event
+    - prints: preserve_id, escrow amount, tier, duration, estimated cost
+[ ] `dupenet preserve status <preserve_id>`     GET /preserve/:id → print status, escrow remaining, epochs left
+[ ] `dupenet preserve cancel <preserve_id>`     POST /preserve/:id/cancel → print refund amount
+
+## Implementation Phasing
+
+Phase A (ships with Step 8 — settlement-time, no new infrastructure):
+    [x] AUTO_BID_PCT + CLEARING_SPREAD_PCT + preserve tier constants in physics
+    [x] computeAutoBid() + computeEpochAutoBids() in physics
+    [x] Auto-bid generation in settleEpoch() (credits pools with royalty)
+    [x] sustainabilityRatio() + isSelfSustaining() in physics
+    [x] EpochSummaryRecord: autoBidSats + egressRoyaltySats fields
+    [x] EVENT_KIND_PRESERVE + EVENT_KIND_OFFER constants
+    [ ] Tier labels in FortifyButton (Gold/Silver/Bronze → mapped to FUND events initially)
+    [ ] Sustainability estimate in instrument cluster (from drain_rate, before real auto-bid data)
+
+Phase B (Step 7c iteration — after launch, when bid volume justifies):
+    - PreserveOrderV1 schema + PreservePayload
+    - PreserveEscrow Prisma model + escrow logic
+    - Epoch-boundary clearing
+    - Preserve lifecycle (create, cancel, lapse, auto-renew)
+    - GET /market/orderbook, GET /content/:ref/sustainability
+    - PreserveButton sends real PRESERVE events (replaces FUND shim)
+    - CLI preserve commands
+
+Phase C (post-launch, when host count > 10):
+    - Host OFFER events (kind=0x0B) + bond
+    - Clearinghouse guarantee enforcement (re-matching from bond pool)
+    - Premium (bonded OFFER) vs commodity (spot) host tiers in clearing
+    - Full orderbook display in UI (preserve demand + OFFER supply)
 
 
 LEGEND: [x] done  [~] partial/stub  [ ] not started

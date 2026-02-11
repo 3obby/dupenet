@@ -11,7 +11,9 @@ import {
   founderRoyaltyRate,
   computeRoyalty,
   cumulativeFounderIncome,
+  computeEgressRoyalty,
   FOUNDER_ROYALTY_R0,
+  EGRESS_ROYALTY_PCT,
 } from "../../src/index.js";
 
 describe("founderRoyaltyRate", () => {
@@ -121,5 +123,67 @@ describe("cumulativeFounderIncome", () => {
     // Plan says: at 100 BTC (10B sats), cumulative founder income ≈ 5.27 BTC (527M sats)
     const income = cumulativeFounderIncome(10_000_000_000);
     expect(income / 100_000_000).toBeCloseTo(5.27, 0); // within ~1 BTC
+  });
+});
+
+// ── Egress Royalty (flat 1%) ──────────────────────────────────────
+
+describe("computeEgressRoyalty", () => {
+  it("returns 0 for 0 egress", () => {
+    const { egressRoyalty, hostEgress } = computeEgressRoyalty(0);
+    expect(egressRoyalty).toBe(0);
+    expect(hostEgress).toBe(0);
+  });
+
+  it("returns 0 for negative egress", () => {
+    const { egressRoyalty, hostEgress } = computeEgressRoyalty(-100);
+    expect(egressRoyalty).toBe(0);
+    expect(hostEgress).toBe(0);
+  });
+
+  it("flat 1% at 1000 sats", () => {
+    const { egressRoyalty, hostEgress } = computeEgressRoyalty(1000);
+    expect(egressRoyalty).toBe(10); // floor(1000 * 0.01)
+    expect(hostEgress).toBe(990);
+  });
+
+  it("flat 1% at 100000 sats", () => {
+    const { egressRoyalty, hostEgress } = computeEgressRoyalty(100000);
+    expect(egressRoyalty).toBe(1000);
+    expect(hostEgress).toBe(99000);
+  });
+
+  it("egressRoyalty + hostEgress always equals egressSats", () => {
+    const amounts = [1, 3, 21, 100, 999, 10000, 1_000_000];
+    for (const amount of amounts) {
+      const { egressRoyalty, hostEgress } = computeEgressRoyalty(amount);
+      expect(egressRoyalty + hostEgress).toBe(amount);
+    }
+  });
+
+  it("royalty is always non-negative", () => {
+    const { egressRoyalty } = computeEgressRoyalty(1);
+    expect(egressRoyalty).toBeGreaterThanOrEqual(0);
+  });
+
+  it("does NOT taper with volume (flat at all amounts)", () => {
+    // Unlike founder royalty, egress royalty is always 1%
+    const rate1 = computeEgressRoyalty(100).egressRoyalty / 100;
+    const rate2 = computeEgressRoyalty(1_000_000).egressRoyalty / 1_000_000;
+    // Both should be approximately EGRESS_ROYALTY_PCT (floor makes them exactly 0.01)
+    expect(rate1).toBeCloseTo(EGRESS_ROYALTY_PCT, 2);
+    expect(rate2).toBeCloseTo(EGRESS_ROYALTY_PCT, 4);
+  });
+
+  it("small amounts: floor to 0 royalty (host keeps all)", () => {
+    // 3 sats → floor(3 * 0.01) = floor(0.03) = 0
+    const { egressRoyalty, hostEgress } = computeEgressRoyalty(3);
+    expect(egressRoyalty).toBe(0);
+    expect(hostEgress).toBe(3);
+  });
+
+  it("at exactly 100 sats: royalty is 1", () => {
+    const { egressRoyalty } = computeEgressRoyalty(100);
+    expect(egressRoyalty).toBe(1);
   });
 });

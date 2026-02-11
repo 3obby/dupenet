@@ -92,13 +92,15 @@ model HostServe {
 }
 
 model EpochSummaryRecord {
-  id            Int    @id @default(autoincrement())
-  epoch         Int
-  hostPubkey    String
-  cid           String
-  receiptCount  Int    @default(0)
-  uniqueClients Int    @default(0)
-  rewardSats    BigInt @default(0)
+  id              Int    @id @default(autoincrement())
+  epoch           Int
+  hostPubkey      String
+  cid             String
+  receiptCount    Int    @default(0)
+  uniqueClients   Int    @default(0)
+  rewardSats      BigInt @default(0)
+  autoBidSats     Int    @default(0)    // auto-bid credited to pool[cid] this epoch
+  egressRoyaltySats Int  @default(0)    // egress royalty deducted this epoch
 
   @@unique([epoch, hostPubkey, cid])
   @@index([epoch])

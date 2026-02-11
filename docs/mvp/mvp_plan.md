@@ -16,6 +16,7 @@
 6. **Hosts serve bytes; materializers serve metadata** - Same L402 economics, same market dynamics. Materializers ingest events, build views, serve queries. The coordinator is the first materializer, not a special role.
 7. **Protocol surface area is the enemy** - Proof-of-service (receipts + byte correctness + pool drains) is sacred. Everything else — threading, ranking, author payouts, moderation, discovery, pin semantics — is a materializer view, changeable without a fork.
 8. **The importance index is the product** - The real-time, economically-weighted ranking of what humanity values enough to pay to preserve is a novel signal no other system produces. The protocol is the plumbing; the importance index (content ranked by economic commitment) is the product. The materializer that computes and serves this index is the primary value-creation engine.
+9. **Availability has a clearing price** - The founder operates the clearinghouse matching preservation demand (funders buying replicas × time) to host supply (committed capacity). Pools are the settlement layer; preserve orders are the product layer. The clearing spread is the highest-margin toll — it doesn't taper, compounds with volume, and is naturally monopolistic (liquidity begets liquidity). Every L402 fetch auto-generates a micro-preservation-bid, making consumption mechanically fund availability at the protocol level.
 
 ### Trust Assumptions (MVP)
 
@@ -96,7 +97,7 @@ Everything in the system is one of four operations: `PUT blob`, `POST event`, `S
 
 **Author revenue share (materializer convention)**: ANNOUNCE payload includes optional `author_pubkey` + `revshare_bps` (basis points, e.g. 1500 = 15%). When present, the materializer (or host) splits qualifying payments: bounty pool payouts and L402 egress fees forward `revshare_bps` to `author_pubkey`. Only third-party payments qualify — author's own FUND events and self-generated receipts are excluded (prevents farming loops). Default: 0 bps (opt-in). Hosts advertise "author splits supported" in PricingV1. This gives creators a reason to upload and market their links without requiring them to run a host. Read stays open (or paid per host policy); author earns from preservation + consumption by others.
 
-**Unified pool action**: Tip, upvote, fortify, and pin budget credits are mechanically identical — `POST /event` with `sats > 0` and `ref = pool_key`. Pins add a kind=PIN_POLICY body with drain caps and soft constraints. The protocol only sees `credit pool[ref] += sats`.
+**Unified pool action**: Tip, upvote, fortify, preserve, and pin budget credits are mechanically identical at the protocol layer — `credit pool[ref] += sats`. Preserve orders add a clearing step (materializer-level escrow → epoch-boundary matching → pool credit at clearing price). Pins add kind=PIN_POLICY body with drain caps. Raw FUND events credit immediately. The protocol only sees pool credits regardless of entry path.
 
 **Value capture (toll booths)**:
 
@@ -114,10 +115,12 @@ Everything in the system is one of four operations: `PUT blob`, `POST event`, `S
 | Namespace auctions + renewals | Product | Auction | Materializer operator |
 | Pin insurance / SLA policies | Product | Risk-priced | Insurer (materializer operator) |
 | Provisioning surcharge | Product | Provider-set | Managed node provider |
+| **Preserve clearing spread** | Product | 3% of matched preserve value | Clearinghouse operator (founder) |
+| **Auto-bid pool credits** | Protocol (indirect) | AUTO_BID_PCT of L402 egress → pool credit (subject to pool credit royalty) | Founder (via royalty on auto-bid credits) |
 
 Protocol tolls: pool credit royalty (volume-tapering) + egress royalty (flat 1%). Both to founder pubkey, both visible, both deterministic. The egress royalty aligns founder income with Flywheel A (paid marketplace) — without it, L402 commerce that dominates protocol volume generates zero passive founder income.
 All service fees are market-determined — no hardcoded percentages for any operational role.
-Product tolls iterate with engagement and are the primary revenue engine at scale.
+Product tolls iterate with engagement and are the primary revenue engine at scale. The clearing spread is the highest-margin product toll — it doesn't taper, compounds with transaction count, and is naturally monopolistic (orderbook liquidity attracts both sides). Auto-bids double-dip: every L402 fetch generates egress royalty (1%) AND an auto-bid pool credit (subject to pool credit royalty). Two independent income events from one fetch.
 
 ---
 
@@ -186,8 +189,10 @@ These are `EventV1.body` schemas the reference materializer interprets. Not prot
 | 0x05 | REFUSAL | CID | reason enum + scope | Operator content filtering |
 | 0x06 | ATTEST | CID or event_id | claim enum + confidence + evidence_cid | Third-party claims |
 | 0x07 | LIST | list topic | title, items[{cid, name, mime, size}] | Named collections |
-| 0x08 | PIN_POLICY | pool_key | drain_rate, min_copies, regions, duration | FUND + drain constraints; materializer enforces SLA |
+| 0x08 | PIN_POLICY | pool_key | drain_rate, min_copies, regions, duration | FUND + drain constraints; materializer enforces SLA. Foundation for preserve orders — preserve extends pins with bid aggregation + clearing + cancellability (see §Preserve Orders) |
 | 0x09 | MATERIALIZER | materializer pubkey | endpoint, pricing, coverage | Metadata host discovery |
+| 0x0A | PRESERVE | pool_key | tier, target_replicas, min_jurisdictions, duration_epochs, max_price_per_epoch, auto_renew | Preservation order (demand side). Sats escrowed until epoch-boundary clearing. Extends PIN_POLICY with aggregation + clearing spread. Materializer convention. |
+| 0x0B | OFFER | pool_key | replicas, regions, price_per_epoch, bond_sats, duration_epochs | Host commitment (supply side). Bonded capacity offer matched against PRESERVE orders at clearing. Materializer convention. |
 
 ### Entity Relationships
 
@@ -426,8 +431,9 @@ The founder's materializer (the attention surface / leaderboard) generates produ
 - **Institutional API / intelligence**: real-time importance data; $5K-$1M/year per customer
 - **Pro dashboard**: full battle terminal; $21/month in sats
 - **Attestation service**: cryptographic provenance verification; per-attestation fee
+- **Preserve clearing spread**: 3% of every preserve order matched through the clearinghouse. Does not taper. Compounds with transaction count. Naturally monopolistic (liquidity begets liquidity). The exchange model — fork the protocol, but the orderbook doesn't come with you.
 
-Product revenue scales superlinearly with adoption. Protocol royalties (pool credit + egress) are the passive floor; product revenue is the active ceiling. See §Post-MVP Revenue Layers for trigger conditions and build order.
+Product revenue scales superlinearly with adoption. Protocol royalties (pool credit + egress) are the passive floor; the clearing spread is the durable middle; product revenue (auctions, insurance, API) is the active ceiling. See §Post-MVP Revenue Layers for trigger conditions and build order.
 
 ---
 
@@ -435,7 +441,15 @@ Product revenue scales superlinearly with adoption. Protocol royalties (pool cre
 
 ### Accumulation
 
-Tips and pin contract budgets fund bounty pools per CID. In Layer A, tips go to target CID directly. Layer B adds harmonic vine allocation across content hierarchies (see `post_mvp.md`).
+Three paths for sats to enter a pool, in order of expected volume:
+
+1. **Auto-bids from traffic** — Every L402 paid fetch generates a micro-preservation-bid: `auto_bid = price_sats * AUTO_BID_PCT`. Credited to `pool[fetched_cid]` at settlement time (subject to pool credit royalty). Open-access fetches with bounty-funded receipts generate equivalent auto-bids funded from the pool's epoch drain surplus. This makes consumption mechanically fund availability — the "attention increases availability" thesis realized at the settlement layer, not just the UX layer. Content becomes self-sustaining when auto-bid income exceeds preservation cost (see §Sustainability Ratio).
+
+2. **Preserve orders** — Structured bids: `{cid, tier, target_replicas, duration, max_price_per_epoch}`. Multiple funders' preserve orders on the same CID aggregate into a single demand signal. Sats escrowed until epoch-boundary clearing matches demand to host supply, then credited to pool at clearing price. Uncredited sats refundable on cancellation. The materializer clearinghouse takes CLEARING_SPREAD_PCT on matched value. Preserve is the primary explicit funding product — "Preserve (Gold/Silver/Bronze)" replaces raw sats donation as the default CTA. See §Preserve Orders.
+
+3. **Raw FUND events** — Direct `POST /event` with `sats > 0` and `ref = pool_key`. Irrevocable pool credit. The power-user / programmatic path. Tip/upvote/fortify are all FUND with different amounts. Same as before — preserve orders and auto-bids don't replace this, they layer on top.
+
+Layer B adds harmonic vine allocation across content hierarchies (see `post_mvp.md`).
 
 ### Release
 
@@ -443,8 +457,9 @@ Hosts claim by proving they serve the content (per epoch):
 
 1. Host registers: `HostServeV1 { host_pubkey, cid, endpoint, stake }`
 2. Clients fetch via L402, optionally mint PoW receipts
-3. If ≥ 5 receipts from ≥ 3 unique clients in epoch: host earns `epoch_reward`
+3. If receipt_count ≥ 1 AND total_proven_sats > 0: host earns `epoch_reward` (smooth scaling — see §Epoch-Based Rewards)
 4. Ongoing: host earns egress fees per request (host-configured pricing)
+5. Auto-bids from traffic feed back into pool, sustaining the cycle
 
 ### Equilibrium
 
@@ -457,6 +472,46 @@ Hosts claim by proving they serve the content (per epoch):
 | 2000+ sats | 10+ | Commodity race |
 
 Step-function durability emerges from host economics, not protocol rules.
+
+### Preserve Orders (Product Layer on Pools)
+
+A preserve order is a materializer-level product that structures how sats enter pools. Replaces "donate sats to a blind pool" with "buy an availability outcome." Pools (settlement layer) are unchanged — preserve orders control entry, not drain.
+
+**Price unit**: `sats / replica / epoch`. This is the single price dimension. Region, jurisdiction, latency, and uptime score are constraint filters on the same market, not separate markets.
+
+```
+PreserveOrderV1 {
+  cid: bytes32
+  tier: GOLD | SILVER | BRONZE | CUSTOM   // preset or explicit params
+  target_replicas: u8                      // Gold=10, Silver=5, Bronze=3
+  min_jurisdictions: u8                    // Gold=3, Silver=2, Bronze=1
+  duration_epochs: u32                     // Gold=1080(6mo), Silver=540(3mo), Bronze=180(1mo)
+  max_price_per_epoch: u64                 // funder's ceiling
+  auto_renew: bool
+  funder: pubkey
+  sig: signature
+}
+```
+
+**Bid aggregation**: multiple funders' preserve orders on the same CID combine into aggregate demand. "93 backers requesting avg 6.2 replicas at median 40 sats/epoch." Hosts see real demand curves, not opaque pool balances.
+
+**Clearing (epoch-boundary)**: materializer matches aggregate demand per CID against host supply (hosts serving + committed hosts). Computes clearing price. Credits `pool[cid]` at clearing price × matched replicas. Uncredited escrow refundable on cancellation minus time-value fee.
+
+**Preserve lifecycle**: ACTIVE → draining (clearing credits pool each epoch) → LAPSED (stop renewing → order expires, content degrades to organic auto-bid level) → CANCELLED (explicit cancel, unused escrow returned). Clean exit — no "sats trapped in a dying pool."
+
+**Coexistence with raw FUND**: preserve orders and FUND events both credit the same pool. A CID can have 5 active preserve orders AND raw FUND credits. Settlement doesn't distinguish — hosts earn from the pool regardless of how sats entered.
+
+**Clearing spread**: materializer takes `CLEARING_SPREAD_PCT` (3%) on matched preserve value. The exchange model — founder operates the matching engine, sees all order flow, earns on every match. This toll doesn't taper (unlike pool credit royalty) and compounds with transaction count.
+
+**Guarantee enforcement**: Preserve outcomes are guaranteed by the clearinghouse operator, not by individual hosts. The funder's SLA is with the clearinghouse. The clearinghouse monitors host availability (spot-checks, receipts), re-matches when a host fails, and uses host commitment bonds as its insurance pool for re-matching costs. If a Gold-tier preserve drops below target replicas because a host went offline, the clearinghouse re-matches from the bond pool within 1 epoch. The funder never needs to know which host failed — they just see "Gold tier maintained." If the clearinghouse itself fails, preserve degrades to best-effort spot market (same as FUND). This is why the clearinghouse position is valuable: it bears the guarantee risk, and earns the clearing spread for doing so.
+
+**Host supply: OFFER events** (supply-side orderbook). Hosts signal committed capacity via `kind=OFFER` events: `{ ref, replicas, regions, price_per_epoch, bond_sats, duration_epochs }`. Non-bonded hosting still exists (pure spot market — hosts self-select profitable CIDs, earn from pool drain). But OFFER-bonded hosts are what the clearinghouse matches against preserve orders. Two-tier supply: commodity hosts (spot, pool drain only) and committed hosts (bonded OFFER, earn clearing price). Both coexist — the spot market bootstraps the network; committed hosts make preserve guarantees credible.
+
+**Phasing**: MVP ships tier-based "Preserve" UX + bid aggregation display. Formal automated clearing + host commitments follow in Step 7c. Pin contracts (kind=PIN_POLICY) are the existing implementation; preserve orders extend pins with aggregation + clearing + cancellability.
+
+### Sustainability Ratio (Derived Signal)
+
+For each CID: `sustainability_ratio = organic_auto_bid_income / preservation_cost_at_current_replicas`. If ≥ 1.0: content is self-sustaining from traffic alone — no explicit backers needed. Displayed on every content page: "Self-sustaining" (green) | "Needs 300 more sats/epoch" (amber) | "Unfunded" (red). Novel metric — no other system measures "at what point does content earn its own survival from its audience."
 
 ---
 
@@ -482,6 +537,8 @@ Step-function durability emerges from host economics, not protocol rules.
 **Staking (MVP)**: Custodial via LN payment to coordinator. Post-MVP: on-chain UTXO / federation / DLC escrow.
 
 **Modes**: Public Gateway (full earnings) | Archive Only (epoch reward only, behind NAT).
+
+**Committed hosts (post-launch, materializer-level)**: Hosts may opt into preserve fulfillment via `kind=OFFER` events with additional bond beyond the base 2,100 sat stake. Committed hosts serve specific CIDs for a duration and earn the clearing price (typically higher than residual pool drain). If they fail availability checks during an active preserve period, bond compensates clearinghouse re-matching costs. This is materializer enforcement, not protocol slashing — the protocol's "never slash for availability" principle is preserved. The commitment bond is a voluntary product-layer contract. Two-tier supply: commodity hosts (spot market, pool drain only) and committed hosts (bonded OFFER, earn clearing price). The spread between them is another founder income source via the clearing mechanism.
 
 **Receipts**: Bind asset_root + file_root + block_cid + host + payment_hash + response_hash + epoch + client. PoW target: 2^240. Ordering forced: pay → fetch → hash → PoW → submit.
 
@@ -526,6 +583,8 @@ Host economics: on open-access fetches, hosts earn from the bounty stream (epoch
 Size constraint: for large files (video, archives), open access serves derived variants only (thumbnails, excerpts, per-page PDF renders, text extracts). Full raw file stays L402-gated unless pool is large enough to justify the bandwidth. For small/medium documents (court filings, text), open access serves the full file. The threshold is host-decided via `open_min_pool_sats` — a host serving video has higher costs and sets a higher threshold.
 
 **Receipt economics are identical across streams.** Whether the consumer paid L402 or consumed open-access content, the host produces a receipt. Settlement doesn't distinguish. The pool drains to receipt-holders regardless of how the consumer accessed the content. This means open-access fetches drive the same host economics as paid fetches: more reads → more receipts → more hosts mirror → faster downloads → more reads.
+
+**Auto-bids from traffic**: Every L402 paid fetch generates `auto_bid = price_sats * AUTO_BID_PCT` credited to `pool[fetched_cid]` at settlement. Open-access fetches generate equivalent auto-bids funded from epoch drain surplus. This closes the loop: consumption → auto-bid → pool growth → more hosts → better serving → more consumption. Content becomes self-sustaining when auto-bid income exceeds preservation cost at current replica level (see §Sustainability Ratio). Auto-bid pool credits are subject to the standard pool credit royalty — founder earns on every fetch twice (egress royalty + royalty on auto-bid credit).
 
 UI: open-access content pages show "Free to read, pay to preserve." Paid content pages show price tag + Buy button (cheapest host). Rate-limited per-IP same as free preview. The conversion event for open content is Fortify, not L402. For paid content, both L402 (buy) and Fortify (fund durability) are visible.
 
@@ -1081,6 +1140,9 @@ Reputation signals are exhaust from normal protocol operation. No ratings, no re
 | Host diversity | Distinct regions/ASNs of serving hosts | Geographic resilience |
 | Epoch survival | Consecutive epochs with active receipts | Sustained demand over time |
 | Estimated sustainability | bounty / drain_rate at current host count | How long funding lasts |
+| Organic auto-bid income | `Σ(auto_bid)` per epoch from traffic receipts | How much consumption alone funds this CID |
+| Sustainability ratio | organic_auto_bid_income / preservation_cost | ≥1.0 = self-sustaining from traffic alone; <1.0 = needs explicit backers |
+| Active preserve backers | Count + aggregate tier of active preserve orders | Coalition size + commitment level (stronger signal than one-time tips) |
 | Graph importance | Weighted PageRank over citation DAG (ref edges + body edges + list edges) | Structural centrality — how referenced by funded analysis |
 | In-degree (funded) | Count of funded events whose ref or body edges point here | How many paid statements cite this node |
 | Orphan score | High direct pool + low graph connectivity (few inbound ref/body edges from funded events) + low discussion depth (few/zero kind=POST replies) | "Funded, but under-analyzed" — content with economic commitment but no discourse. Analyst job board. |
@@ -1268,6 +1330,30 @@ Exit: new node calls GET /bootstrap, materializes state from snapshot + recent e
 
 ---
 
+**7c. Preserve clearing + auto-bids**
+
+Deliverables:
+- `PreserveOrderV1` TypeBox schema in physics (tier, target_replicas, min_jurisdictions, duration_epochs, max_price_per_epoch, auto_renew)
+- kind=PRESERVE (0x0A) event support in coordinator event ingestion
+- Preserve escrow: sats held in `escrow[preserve_id]` until clearing, not credited to pool immediately
+- Bid aggregation: per-CID demand profile computed from active preserve orders (aggregate target replicas, median willingness-to-pay)
+- Host OFFER events: `kind=OFFER` (0x0B) — supply-side orderbook (ref, replicas, regions, price_per_epoch, bond_sats, duration)
+- Epoch-boundary clearing: match aggregate demand → host supply → compute clearing price → credit pool at clearing price × matched replicas
+- `CLEARING_SPREAD_PCT` deducted from matched value → founder income
+- Preserve lifecycle: ACTIVE → LAPSED (expiry) → CANCELLED (explicit, unused escrow returned minus time-value fee)
+- Auto-bid generation: settlement-time computation `auto_bid = price_sats * AUTO_BID_PCT` per L402 receipt → credited to pool[fetched_cid]
+- Sustainability ratio computation: `organic_auto_bid_income / preservation_cost` per CID per epoch
+- `GET /market/orderbook/<cid>` — live bid aggregation + supply curve (extends Step 7 `GET /market/quote`)
+- `GET /content/:ref/sustainability` — auto-bid income, preservation cost, ratio, self-sustaining status
+
+Dependencies: Steps 6-7 (needs EventV1 + signal endpoints + pools in Prisma)
+
+Phasing: auto-bids + tier-based UX ship with Step 8 (settlement-time computation, no new infrastructure). Formal clearing + escrow + host commitments ship as Step 7c iteration after launch. Bid aggregation display ships with Step 8 (read-only view over preserve events).
+
+Exit: `GET /market/orderbook/<cid>` returns live demand/supply. Auto-bids visible on content pages. Sustainability ratio displayed in instrument cluster.
+
+---
+
 **8. The Leaderboard + Storefront (primary product surface)**
 
 The web app is a storefront, not a directory. It shows you the content (or a preview of it), surrounded by context (funding, replicas, discussion). Some content is free to read (sponsored by funders). Some costs sats (priced by hosts). The Fortify button works on both — it buys durability, not access. This is the global importance scoreboard — content ranked by economic commitment. The product that drives adoption, distribution, funding, and institutional revenue. Ship this before polish.
@@ -1283,7 +1369,7 @@ Core surface:
     - **Paid content** (no open host or below threshold): render free preview (≤16 KiB: excerpt, thumbnail, first page). Show price tag + Buy button (L402 flow). Multiple hosts → show cheapest.
     - Inline render by MIME: text/HTML rendered directly; images displayed inline; PDFs rendered page-by-page; audio/video with player controls. Download link becomes secondary ("raw" link for power users).
   - **Always visible regardless of access mode:**
-    - Instrument cluster: total sats, unique funders, demand (fetches/epoch), copies, sustainability meter, access mode
+    - Instrument cluster: total sats, unique funders, demand (fetches/epoch), copies, sustainability ratio (auto-bid income vs preservation cost), preserve backers + tier, access mode
     - Dual score display: direct pool balance + graph-weighted importance (divergence visible)
     - Replica map: hosts serving this content, by country/ASN
     - Thread: discussion (kind=POST events with ref=this CID or event_id), weighted by sats committed per post
@@ -1377,7 +1463,8 @@ Phase 1.5 (parallel, no VPS dependency):
 [6] ────────────►              (EventV1 envelope + kind conventions)
      [7] ──────────────►       (materializer views + signal endpoints)
      [7b] ─────────►           (snapshots; parallel with 7)
-          [8] ────────────►    (web surface + threading)
+          [8] ────────────►    (web surface + threading + auto-bids + tier UX)
+               [7c] ────────►  (preserve clearing + escrow; iterates after launch)
 ```
 
 Phase 2 (Layer B: first-party app) build plan is in `post_mvp.md`. Harmonic allocation, paid inbox, vine model, plural discovery are materializer/app features, not protocol.
@@ -1542,11 +1629,18 @@ The normie who just arrived from Twitter sees the instrument cluster, gets it, w
 
 The Fortify flow must handle three tiers of user:
 
-**Outcome-oriented UX**: Fortify defaults to buying a goal, not an amount. The selector shows outcomes derived from `GET /market/quote`:
-- "Keep this at 7 replicas for ~30 days" → 2,100 sats
-- "Keep this open-to-read for ~7 days" → 210 sats
-- "Custom amount" → freeform sats input
-Under the hood it's still FUND events. The UX converts sats into human-readable outcomes. This is where normies convert — "I'm purchasing an outcome" vs "I'm donating a number." Even at low host count, show the best estimate: "est. ~30 days at current drain rate."
+**"Preserve" tiers (primary CTA)**: The default action is buying a preservation outcome, not donating sats. Three CTAs everywhere, in priority order:
+
+1. **Preserve** (primary) — tier selector derived from `GET /market/quote` + supply curve:
+   - **Gold** — "10 replicas, 3+ jurisdictions, ~6 months" → price from clearing estimate
+   - **Silver** — "5 replicas, 2+ jurisdictions, ~3 months" → price from clearing estimate
+   - **Bronze** — "3 replicas, ~1 month" → price from clearing estimate
+2. **Buy** (secondary, paid content only) — L402 egress, cheapest host
+3. **Fund** (power-user) — freeform sats, raw FUND event, irrevocable pool credit
+
+Under the hood, Preserve Gold/Silver/Bronze create `PreserveOrderV1` events (sats escrowed → clearing → pool credit). Fund creates raw FUND events (immediate pool credit). The normie sees "I'm preserving this at Gold tier" — a product with a measurable outcome guaranteed by the clearinghouse, not a donation to a mystery pool. Even at low host count, show best estimate: "est. ~30 days at current drain rate." Preserve backers shown on content page: "93 backers · Gold tier · funded through August."
+
+**Sustainability display**: Every content page shows auto-bid status alongside preserve info. "This content generates 12 sats/epoch from organic traffic. Current preservation cost: 8 sats/epoch. Self-sustaining ✓" or "Needs 300 more sats/epoch from backers." When sustainability_ratio ≥ 1.0, the Preserve button shifts from urgent to optional — "Already self-sustaining. Boost to Gold?"
 
 1. **Lightning-native** (WebLN wallet installed): Click Fortify → goal selector → WebLN auto-pays → counter increments in <5 seconds. Zero friction.
 
@@ -1816,6 +1910,13 @@ Current design: client fetches all blocks from one host, failover to next on fai
 | OPEN_MIN_POOL_SATS_DEFAULT | 500 | Default host threshold for open-access serving; below this pool balance, host falls back to L402 |
 | SNAPSHOT_INTERVAL_EPOCHS | 100 | State snapshot every 100 epochs (~17 days) |
 | ANCHOR_INTERVAL_EPOCHS | 6 | Epoch root anchored to Bitcoin every 6 epochs (~1/day) |
+| AUTO_BID_PCT | 0.02 (2%) | % of L402 egress price auto-credited to pool[fetched_cid] per receipt. Founder earns pool credit royalty on these. Tunable per-epoch. |
+| CLEARING_SPREAD_PCT | 0.03 (3%) | % of matched preserve value taken by clearinghouse operator. Does not taper. Product-level toll. |
+| PRESERVE_ESCROW_TIMEOUT_EPOCHS | 6 (24h) | Unmatched preserve escrow auto-refunds after this many epochs without clearing |
+| PRESERVE_CANCEL_FEE_PCT | 0.02 (2%) | Time-value fee on unused escrow at cancellation (lower than PIN_CANCEL_FEE — preserve orders are renewable, not one-shot) |
+| PRESERVE_GOLD_REPLICAS | 10 | Default target replicas for Gold tier |
+| PRESERVE_SILVER_REPLICAS | 5 | Default target replicas for Silver tier |
+| PRESERVE_BRONZE_REPLICAS | 3 | Default target replicas for Bronze tier |
 
 **Derived (not tunable)**:
 - PoW difficulty: `TARGET_BASE >> floor(log2(receipt_count + 1))`
@@ -1825,6 +1926,9 @@ Current design: client fetches all blocks from one host, failover to next on fai
 - Collection fan-out share: `floor(total_sats * item.size / total_collection_size)` per constituent
 - Resilience score: weighted composite of replica count, host diversity, demand trend, sustainability estimate
 - Importance triangle labels: percentile-based (Underpriced / Flash / Endowed — see §Signal Layer)
+- Auto-bid per receipt: `price_sats * AUTO_BID_PCT` — credited to pool[cid] at settlement
+- Sustainability ratio: `organic_auto_bid_income / preservation_cost` — ≥1.0 = self-sustaining
+- Clearing price: epoch-boundary matching of aggregate preserve demand vs host supply per CID
 
 Layer A.1 constants are tunable at the same granularity as Layer A (epoch boundaries or local). Layer B constants (vine allocation, discovery, inbox) are in `post_mvp.md`.
 

@@ -45,10 +45,11 @@ export {
   type HostScore,
 } from "./reward.js";
 
-// Epoch aggregation (pure receipt grouping + eligibility)
+// Epoch aggregation (pure receipt grouping + eligibility + payout weight)
 export {
   aggregateReceipts,
   isPayoutEligible,
+  computePayoutWeight,
   type ReceiptDigest,
   type EpochGroup,
 } from "./epoch-aggregation.js";
@@ -76,11 +77,12 @@ export {
   verifyEventSignature,
 } from "./event-signature.js";
 
-// Founder royalty (volume-tapering protocol fee)
+// Founder royalty (volume-tapering protocol fee) + egress royalty (flat 1%)
 export {
   founderRoyaltyRate,
   computeRoyalty,
   cumulativeFounderIncome,
+  computeEgressRoyalty,
 } from "./royalty.js";
 
 // Block selection (anti-special-casing PRF)
@@ -103,6 +105,15 @@ export {
   buildEventPowChallenge,
   verifyEventPow,
 } from "./event-v1.js";
+
+// Auto-bid computation (traffic-driven pool funding + sustainability)
+export {
+  computeAutoBid,
+  computeEpochAutoBids,
+  sustainabilityRatio,
+  isSelfSustaining,
+  type AutoBidResult,
+} from "./auto-bid.js";
 
 // All schemas
 export * from "./schemas/index.js";

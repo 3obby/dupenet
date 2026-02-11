@@ -2,6 +2,10 @@
  * Golden test vectors — epoch reward formula.
  * These vectors verify the log-scaled cap and score-weighted distribution.
  * DocRef: MVP_PLAN:§Reward Formula
+ *
+ * Economics rework (2026-02-10):
+ *   - HostScore now has payoutWeight (not uniqueClients).
+ *   - computeHostScore = payoutWeight × (W_UPTIME × uptime + W_DIVERSITY × diversity).
  */
 
 import { describe, it, expect } from "vitest";
@@ -39,7 +43,9 @@ describe("epoch reward formula", () => {
   });
 
   it("distribute rewards: single host gets full cap minus aggregator fee", () => {
-    const hosts = [{ uniqueClients: 5, uptimeRatio: 1.0, diversityContribution: 1.0 }];
+    // payoutWeight = totalProvenSats * (1 + log2(uniqueClients))
+    // For 5 clients, 15 sats: weight = 15 * (1 + log2(5)) ≈ 15 * 3.32 ≈ 49.8
+    const hosts = [{ payoutWeight: 50, uptimeRatio: 1.0, diversityContribution: 1.0 }];
     const rewards = distributeRewards(2500, hosts);
     // Cap = 50, after 3% fee = 48.5 → floor = 48
     expect(rewards[0]).toBe(48);
@@ -47,17 +53,26 @@ describe("epoch reward formula", () => {
 
   it("distribute rewards: two equal hosts split evenly", () => {
     const hosts = [
-      { uniqueClients: 5, uptimeRatio: 1.0, diversityContribution: 1.0 },
-      { uniqueClients: 5, uptimeRatio: 1.0, diversityContribution: 1.0 },
+      { payoutWeight: 50, uptimeRatio: 1.0, diversityContribution: 1.0 },
+      { payoutWeight: 50, uptimeRatio: 1.0, diversityContribution: 1.0 },
     ];
     const rewards = distributeRewards(2500, hosts);
     expect(rewards[0]).toBe(rewards[1]);
   });
 
-  it("distribute rewards: higher-scoring host gets more", () => {
+  it("distribute rewards: higher payoutWeight host gets more", () => {
     const hosts = [
-      { uniqueClients: 10, uptimeRatio: 1.0, diversityContribution: 1.0 },
-      { uniqueClients: 3, uptimeRatio: 0.7, diversityContribution: 0.5 },
+      { payoutWeight: 200, uptimeRatio: 1.0, diversityContribution: 1.0 },
+      { payoutWeight: 50, uptimeRatio: 0.7, diversityContribution: 0.5 },
+    ];
+    const rewards = distributeRewards(2500, hosts);
+    expect(rewards[0]!).toBeGreaterThan(rewards[1]!);
+  });
+
+  it("distribute rewards: higher uptime gets more (equal payoutWeight)", () => {
+    const hosts = [
+      { payoutWeight: 100, uptimeRatio: 1.0, diversityContribution: 1.0 },
+      { payoutWeight: 100, uptimeRatio: 0.5, diversityContribution: 1.0 },
     ];
     const rewards = distributeRewards(2500, hosts);
     expect(rewards[0]!).toBeGreaterThan(rewards[1]!);
@@ -65,5 +80,40 @@ describe("epoch reward formula", () => {
 
   it("distribute rewards: no hosts → empty array", () => {
     expect(distributeRewards(2500, [])).toEqual([]);
+  });
+});
+
+describe("computeHostScore (multiplicative formula)", () => {
+  it("zero payoutWeight → zero score regardless of quality", () => {
+    expect(computeHostScore({ payoutWeight: 0, uptimeRatio: 1.0, diversityContribution: 1.0 })).toBe(0);
+  });
+
+  it("zero quality → zero score regardless of payoutWeight", () => {
+    expect(computeHostScore({ payoutWeight: 100, uptimeRatio: 0, diversityContribution: 0 })).toBe(0);
+  });
+
+  it("perfect quality: score = payoutWeight × (0.6 + 0.4) = payoutWeight", () => {
+    // W_UPTIME=0.6, W_DIVERSITY=0.4 → 0.6*1 + 0.4*1 = 1.0
+    expect(computeHostScore({ payoutWeight: 100, uptimeRatio: 1.0, diversityContribution: 1.0 })).toBe(100);
+  });
+
+  it("half uptime: score = payoutWeight × (0.6×0.5 + 0.4×1.0) = payoutWeight × 0.7", () => {
+    expect(computeHostScore({ payoutWeight: 100, uptimeRatio: 0.5, diversityContribution: 1.0 })).toBeCloseTo(70, 6);
+  });
+
+  it("score is proportional to payoutWeight", () => {
+    const s1 = computeHostScore({ payoutWeight: 100, uptimeRatio: 1.0, diversityContribution: 1.0 });
+    const s2 = computeHostScore({ payoutWeight: 200, uptimeRatio: 1.0, diversityContribution: 1.0 });
+    expect(s2).toBeCloseTo(s1 * 2, 6);
+  });
+
+  it("score is continuous (no cliffs)", () => {
+    const weights = [1, 2, 3, 5, 10, 50, 100];
+    const scores = weights.map((w) =>
+      computeHostScore({ payoutWeight: w, uptimeRatio: 0.8, diversityContribution: 0.9 }),
+    );
+    for (let i = 1; i < scores.length; i++) {
+      expect(scores[i]!).toBeGreaterThan(scores[i - 1]!);
+    }
   });
 });

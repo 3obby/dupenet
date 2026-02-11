@@ -13,6 +13,7 @@ import {
   FOUNDER_ROYALTY_R0,
   FOUNDER_ROYALTY_V_STAR,
   FOUNDER_ROYALTY_ALPHA,
+  EGRESS_ROYALTY_PCT,
 } from "./constants.js";
 
 /**
@@ -55,4 +56,29 @@ export function cumulativeFounderIncome(cumulativeVolume: number): number {
     ((FOUNDER_ROYALTY_R0 * FOUNDER_ROYALTY_V_STAR) / exp) *
     (Math.pow(1 + cumulativeVolume / FOUNDER_ROYALTY_V_STAR, exp) - 1)
   );
+}
+
+// ── Egress Royalty ──────────────────────────────────────────────────
+
+/**
+ * Compute egress royalty — flat 1% of L402 egress fees.
+ * DocRef: MVP_PLAN:§Egress Royalty
+ *
+ * Unlike the pool credit royalty (volume-tapering), egress royalty is a
+ * flat percentage that does not taper. Provides a durable passive income
+ * floor for the founder as the network grows.
+ *
+ * Deducted at epoch settlement from proven egress (sum of price_sats
+ * across receipts). Credited to FOUNDER_PUBKEY.
+ *
+ * @param egressSats - total proven L402 egress fees for a CID in an epoch
+ * @returns { egressRoyalty, hostEgress } — royalty to founder, remainder to host
+ */
+export function computeEgressRoyalty(egressSats: number): {
+  egressRoyalty: number;
+  hostEgress: number;
+} {
+  if (egressSats <= 0) return { egressRoyalty: 0, hostEgress: 0 };
+  const egressRoyalty = Math.floor(egressSats * EGRESS_ROYALTY_PCT);
+  return { egressRoyalty, hostEgress: egressSats - egressRoyalty };
 }

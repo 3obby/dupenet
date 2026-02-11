@@ -25,8 +25,7 @@ export const EPOCH_LENGTH_MS = 4 * 60 * 60_000; // 4h
 export const OPERATOR_STAKE_SATS = 2_100;
 export const UNBONDING_PERIOD_DAYS = 7;
 
-export const RECEIPT_MIN_COUNT = 5;
-export const RECEIPT_MIN_UNIQUE_CLIENTS = 3;
+export const RECEIPT_MIN_COUNT = 1; // smooth payout_weight replaces hard 5/3 gate
 
 export const POW_TARGET_BASE = 2n ** 240n; // ~200ms on mobile (receipt PoW)
 export const POW_ESCALATION_THRESHOLD = 8; // receipts/day before difficulty ramps
@@ -64,6 +63,36 @@ export const EVENT_MAX_BODY = 16_384; // 16 KiB — max EventV1.body size
 export const MAX_LIST_ITEMS = 1_000; // cap items per kind=LIST event
 
 // Score weights for epoch reward distribution
-export const W_CLIENTS = 0.5;
-export const W_UPTIME = 0.3;
-export const W_DIVERSITY = 0.2;
+// W_CLIENTS removed — absorbed into payoutWeight multiplicative formula
+export const W_UPTIME = 0.6;
+export const W_DIVERSITY = 0.4;
+
+// ── Egress Royalty (flat, does not taper) ─────────────────────────
+// DocRef: MVP_PLAN:§Egress Royalty
+// Flat 1% of L402 egress fees, deducted at epoch settlement, credited to FOUNDER_PUBKEY.
+// Durable passive income floor — does not taper with volume (unlike pool credit royalty).
+export const EGRESS_ROYALTY_PCT = 0.01;
+
+// ── Auto-Bid + Clearinghouse ──────────────────────────────────────
+// DocRef: MVP_PLAN:§Clearinghouse Model, §Auto-Bids
+// AUTO_BID_PCT: % of L402 egress price auto-credited to pool[fetched_cid] per receipt.
+// Subject to pool credit royalty (founder earns on auto-bids).
+export const AUTO_BID_PCT = 0.02; // 2%
+
+// CLEARING_SPREAD_PCT: % of matched preserve order value taken by clearinghouse.
+// Product toll, not protocol toll — does not taper.
+export const CLEARING_SPREAD_PCT = 0.03; // 3%
+
+// ── Preserve Order Tiers ──────────────────────────────────────────
+// DocRef: MVP_PLAN:§Preserve Orders
+// Price unit: sats / replica / epoch. Region/jurisdiction/latency are constraint
+// filters on one market, not separate markets.
+export const PRESERVE_ESCROW_TIMEOUT_EPOCHS = 6; // 24h
+export const PRESERVE_CANCEL_FEE_PCT = 0.02; // 2%
+export const PRESERVE_GOLD_REPLICAS = 10;
+export const PRESERVE_SILVER_REPLICAS = 5;
+export const PRESERVE_BRONZE_REPLICAS = 3;
+
+// ── Event Kind: Preserve + Offer ──────────────────────────────────
+export const EVENT_KIND_PRESERVE = 0x0a; // demand side — preservation order
+export const EVENT_KIND_OFFER = 0x0b; // supply side — host committed capacity
