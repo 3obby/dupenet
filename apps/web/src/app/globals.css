@@ -67,3 +67,10 @@ pre { white-space: pre-wrap; word-break: break-all; }
 }
 
 .cycle-icon { display: inline-block; min-width: 1.5em; text-align: center; }
+
+/* Paid content / Buy button */
+.buy-row { display: inline; }
+.buy-details { display: inline; }
+.paid-notice { padding: 12px 0; }
+.truncation-notice { padding: 4px 0; border-top: 1px dashed #ccc; margin-top: 4px; }
+.access-notice { padding: 2px 0; }

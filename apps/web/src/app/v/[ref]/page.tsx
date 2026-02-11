@@ -2,15 +2,19 @@ import {
   getContentStats,
   getEvents,
   getThread,
-  fetchContentForRender,
+  fetchContentPreview,
+  getCheapestHostPrice,
   fmtSats,
   fmtDate,
+  fmtSize,
   shortHex,
   estRunway,
   timeAgo,
   type ThreadNode,
+  type ContentPreview,
 } from "@/lib/api";
 import { FortifyButton } from "@/components/FortifyButton";
+import { BuyButton } from "@/components/BuyButton";
 import { CommentBox } from "@/components/CommentBox";
 
 export const revalidate = 30;
@@ -30,10 +34,11 @@ export default async function ContentPage({
     return <p>invalid ref</p>;
   }
 
-  const [stats, announceEvents, listEvents] = await Promise.all([
+  const [stats, announceEvents, listEvents, hostPrice] = await Promise.all([
     getContentStats(ref),
     getEvents({ ref, kind: KIND_ANNOUNCE, limit: 1 }),
     getEvents({ ref, kind: KIND_LIST, limit: 1 }),
+    getCheapestHostPrice(),
   ]);
 
   const announce = announceEvents[0];
@@ -58,10 +63,12 @@ export default async function ContentPage({
   const ts = announce?.ts ?? list?.ts;
   const threadCount = thread ? countReplies(thread) : 0;
 
-  // Fetch content for inline rendering (open-access, ≤128 KiB)
-  const content = access === "open"
-    ? await fetchContentForRender(ref, mime, size)
-    : null;
+  // Fetch content preview for ALL content (open and paid)
+  const preview = await fetchContentPreview(ref, mime, size);
+
+  const isPaid = access !== "open";
+  const isFullyRendered = preview ? !preview.truncated && preview.text !== null : false;
+  const pricePerBlock = hostPrice?.price ?? 0;
 
   return (
     <>
@@ -96,12 +103,47 @@ export default async function ContentPage({
         </>
       )}
 
-      {/* Inline content (open access) */}
-      {content && (
+      {/* Inline content (open-access full render) */}
+      {preview && preview.text && !isPaid && !preview.truncated && (
         <>
           <hr />
-          <InlineContent content={content} mime={mime} />
+          <InlineContent content={{ text: preview.text, mime: preview.mime }} mime={mime} />
         </>
+      )}
+
+      {/* Paid content: free preview (small files served in full, large files truncated) */}
+      {preview && preview.text && isPaid && (
+        <>
+          <hr />
+          <InlineContent content={{ text: preview.text, mime: preview.mime }} mime={mime} />
+          {preview.truncated && (
+            <div className="truncation-notice">
+              <span className="t">
+                ... content truncated ({fmtSize(preview.totalSize)} total)
+              </span>
+            </div>
+          )}
+        </>
+      )}
+
+      {/* Paid content: no preview available (large files behind L402) */}
+      {isPaid && preview && !preview.text && (
+        <>
+          <hr />
+          <div className="paid-notice">
+            <span className="t">
+              {"\u25cf"} {mime ?? "file"}{size ? ` \u00b7 ${fmtSize(size)}` : ""}
+              {preview.totalBlocks > 1 && ` \u00b7 ${preview.totalBlocks} blocks`}
+            </span>
+          </div>
+        </>
+      )}
+
+      {/* Open content: subtitle */}
+      {!isPaid && isFullyRendered && (
+        <div className="access-notice">
+          <span className="t">free to read, pay to preserve</span>
+        </div>
       )}
 
       <hr />
@@ -122,8 +164,13 @@ export default async function ContentPage({
         <span className="t" title="runway">
           {"\u25f7"}~{estRunway(stats.balance, Math.max(stats.host_count, 1))}mo
         </span>
+        {isPaid && hostPrice && (
+          <span className="t" title="price per fetch">
+            {"\u0e3f"}{pricePerBlock}/fetch
+          </span>
+        )}
         <span className="t">
-          {access === "open" ? "\u25cb" : "\u25cf"}
+          {access === "open" ? "\u25cb open" : "\u25cf paid"}
         </span>
       </div>
 
@@ -132,9 +179,28 @@ export default async function ContentPage({
       {/* Actions */}
       <FortifyButton poolRef={ref} stats={stats} />
       {" \u00b7 "}
-      <a href={`/cid/${ref}`} title="download">{"\u2913"}</a>
+      <BuyButton
+        assetRef={ref}
+        mime={mime}
+        size={size}
+        totalBlocks={preview?.totalBlocks ?? 1}
+        pricePerBlock={pricePerBlock}
+        hostCount={hostPrice?.hostCount ?? 0}
+        isFree={isFullyRendered || !isPaid}
+      />
       {" \u00b7 "}
       <a href={`/p/${ref}`} title="proof">{"\ud83d\udd0d"}</a>
+
+      {/* Served by N hosts (paid content) */}
+      {isPaid && hostPrice && hostPrice.hostCount > 0 && (
+        <>
+          <br />
+          <span className="t" style={{ fontSize: "11px" }}>
+            served by {hostPrice.hostCount} host{hostPrice.hostCount !== 1 ? "s" : ""}
+            {" \u00b7 from \u0e3f"}{pricePerBlock}/fetch
+          </span>
+        </>
+      )}
 
       {/* Activity pulse */}
       {stats.recent.length > 0 && (
@@ -182,7 +248,7 @@ function ThreadTree({ nodes, depth }: { nodes: ThreadNode[]; depth: number }) {
         <div key={node.event_id} style={{ paddingLeft: depth * 16 }}>
           <span className="t">
             {shortHex(node.from)}
-            {node.sats > 0 && <> \u00b7 {"\u0e3f"}{fmtSats(node.sats)}</>}
+            {node.sats > 0 && <> {"\u00b7"} {"\u0e3f"}{fmtSats(node.sats)}</>}
             {" \u00b7 "}{timeAgo(node.ts)}
           </span>
           <br />

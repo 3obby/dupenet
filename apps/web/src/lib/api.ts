@@ -182,22 +182,36 @@ export async function getContentStats(ref: string): Promise<ContentStats> {
 /** Max bytes to inline-render (128 KiB — covers all text, small images). */
 const INLINE_MAX = 128 * 1024;
 
+export interface ContentPreview {
+  /** Rendered text (UTF-8 text or base64 data URI for images). null if no blocks fetched. */
+  text: string | null;
+  /** MIME type of the content. */
+  mime: string;
+  /** True if not all blocks could be fetched (L402-gated). */
+  truncated: boolean;
+  /** Total file size in bytes. */
+  totalSize: number;
+  /** Total block count in manifest. */
+  totalBlocks: number;
+  /** How many blocks were successfully fetched. */
+  blocksFetched: number;
+}
+
 /**
- * Fetch content bytes for inline rendering.
- * Returns { bytes, mime } for single-block assets,
- * or null if content is too large, behind L402, or not found.
+ * Fetch content for inline rendering — works for both open and paid content.
  *
- * For multi-block assets: resolves asset → manifest → concatenate blocks.
- * Only fetches open-access content that fits within INLINE_MAX.
+ * For open/free-preview content: fetches all blocks, returns full content.
+ * For paid content: fetches whatever blocks the gateway serves for free
+ * (≤16 KiB via free preview tier), flags as truncated if any blocks fail.
+ *
+ * Images are only returned if ALL blocks are fetched (partial images are useless).
+ * Text is returned even if truncated (first N bytes of the document).
  */
-export async function fetchContentForRender(
+export async function fetchContentPreview(
   ref: string,
   declaredMime?: string,
   declaredSize?: number,
-): Promise<{ text: string; mime: string } | null> {
-  // Skip if declared size exceeds inline limit
-  if (declaredSize && declaredSize > INLINE_MAX) return null;
-
+): Promise<ContentPreview | null> {
   try {
     // Try GET /asset/:ref first to get the asset root (manifest pointer)
     const assetRes = await fetch(`${GATEWAY}/asset/${ref}`, {
@@ -205,7 +219,7 @@ export async function fetchContentForRender(
     });
     if (!assetRes.ok) {
       // Might be a raw block — try direct fetch
-      return fetchRawBlock(ref, declaredMime);
+      return fetchRawBlockPreview(ref, declaredMime);
     }
 
     const asset = (await assetRes.json()) as {
@@ -220,71 +234,125 @@ export async function fetchContentForRender(
     const mime = asset.original.mime ?? declaredMime ?? "application/octet-stream";
     const size = asset.original.size;
 
-    // Skip binary types that are too large or non-renderable
-    if (size > INLINE_MAX) return null;
-
-    // Get file manifest
+    // Get file manifest (free — manifests are never L402-gated)
     const fileRes = await fetch(`${GATEWAY}/file/${asset.original.file_root}`, {
       cache: "no-store",
     });
-    if (!fileRes.ok) return null;
+    if (!fileRes.ok) {
+      return { text: null, mime, truncated: true, totalSize: size, totalBlocks: 1, blocksFetched: 0 };
+    }
 
     const manifest = (await fileRes.json()) as { blocks: string[] };
+    const totalBlocks = manifest.blocks.length;
 
-    // Fetch all blocks and concatenate
+    // Skip rendering for very large open-access content (>128 KiB)
+    // But still attempt for paid content to get a preview
+    if (size > INLINE_MAX && !isTextMime(mime) && !mime.startsWith("image/")) {
+      return { text: null, mime, truncated: true, totalSize: size, totalBlocks, blocksFetched: 0 };
+    }
+
+    // Fetch blocks — stop at first L402 (402 response)
     const chunks: Uint8Array[] = [];
+    let truncated = false;
     for (const blockCid of manifest.blocks) {
       const blockRes = await fetch(`${GATEWAY}/block/${blockCid}`, {
         cache: "no-store",
       });
-      if (!blockRes.ok) return null; // L402 or missing
-      chunks.push(new Uint8Array(await blockRes.arrayBuffer()));
+      if (!blockRes.ok) {
+        truncated = true;
+        break; // L402 or missing — stop fetching
+      }
+      const bytes = new Uint8Array(await blockRes.arrayBuffer());
+      chunks.push(bytes);
+
+      // Stop fetching if we have enough for inline render
+      const soFar = chunks.reduce((s, c) => s + c.length, 0);
+      if (soFar > INLINE_MAX) break;
     }
 
-    const totalSize = chunks.reduce((s, c) => s + c.length, 0);
-    const combined = new Uint8Array(totalSize);
+    const blocksFetched = chunks.length;
+
+    if (chunks.length === 0) {
+      // No blocks fetched — content is fully behind L402
+      return { text: null, mime, truncated: true, totalSize: size, totalBlocks, blocksFetched: 0 };
+    }
+
+    // Assemble fetched blocks
+    const totalFetched = chunks.reduce((s, c) => s + c.length, 0);
+    const combined = new Uint8Array(totalFetched);
     let offset = 0;
     for (const c of chunks) {
       combined.set(c, offset);
       offset += c.length;
     }
 
-    // For text-based MIME types, decode as UTF-8
-    if (isTextMime(mime)) {
-      return { text: new TextDecoder().decode(combined), mime };
-    }
-
-    // For images, encode as base64 data URI
+    // Images: only show if ALL blocks were fetched (partial image is useless)
     if (mime.startsWith("image/")) {
+      if (truncated || blocksFetched < totalBlocks) {
+        return { text: null, mime, truncated: true, totalSize: size, totalBlocks, blocksFetched };
+      }
+      if (totalFetched > INLINE_MAX) {
+        return { text: null, mime, truncated: false, totalSize: size, totalBlocks, blocksFetched };
+      }
       const b64 = Buffer.from(combined).toString("base64");
-      return { text: `data:${mime};base64,${b64}`, mime };
+      return { text: `data:${mime};base64,${b64}`, mime, truncated: false, totalSize: size, totalBlocks, blocksFetched };
     }
 
-    // For other types (PDF etc.), skip inline rendering for now
-    return null;
+    // Text: return what we have, flag if truncated
+    if (isTextMime(mime)) {
+      const isFullContent = !truncated && blocksFetched >= totalBlocks;
+      if (!isFullContent && totalFetched > INLINE_MAX) {
+        // Truncate very long previews
+        const decoder = new TextDecoder();
+        const text = decoder.decode(combined.slice(0, INLINE_MAX));
+        return { text, mime, truncated: true, totalSize: size, totalBlocks, blocksFetched };
+      }
+      const text = new TextDecoder().decode(combined);
+      return { text, mime, truncated: !isFullContent, totalSize: size, totalBlocks, blocksFetched };
+    }
+
+    // Other MIME types (PDF, etc.): metadata only for now
+    return { text: null, mime, truncated, totalSize: size, totalBlocks, blocksFetched };
   } catch {
     return null;
   }
 }
 
-async function fetchRawBlock(
+/** Legacy wrapper — returns simple { text, mime } for backward compat (widgets, etc.). */
+export async function fetchContentForRender(
+  ref: string,
+  declaredMime?: string,
+  declaredSize?: number,
+): Promise<{ text: string; mime: string } | null> {
+  const preview = await fetchContentPreview(ref, declaredMime, declaredSize);
+  if (!preview || !preview.text || preview.truncated) return null;
+  return { text: preview.text, mime: preview.mime };
+}
+
+async function fetchRawBlockPreview(
   cid: string,
   declaredMime?: string,
-): Promise<{ text: string; mime: string } | null> {
+): Promise<ContentPreview | null> {
   try {
     const res = await fetch(`${GATEWAY}/block/${cid}`, { cache: "no-store" });
-    if (!res.ok) return null;
-    const bytes = new Uint8Array(await res.arrayBuffer());
-    if (bytes.length > INLINE_MAX) return null;
     const mime = declaredMime ?? "application/octet-stream";
+    if (!res.ok) {
+      // L402-gated block — no preview available
+      return { text: null, mime, truncated: true, totalSize: 0, totalBlocks: 1, blocksFetched: 0 };
+    }
+    const bytes = new Uint8Array(await res.arrayBuffer());
+    const size = bytes.length;
     if (isTextMime(mime)) {
-      return { text: new TextDecoder().decode(bytes), mime };
+      const text = size > INLINE_MAX
+        ? new TextDecoder().decode(bytes.slice(0, INLINE_MAX))
+        : new TextDecoder().decode(bytes);
+      return { text, mime, truncated: size > INLINE_MAX, totalSize: size, totalBlocks: 1, blocksFetched: 1 };
     }
-    if (mime.startsWith("image/")) {
+    if (mime.startsWith("image/") && size <= INLINE_MAX) {
       const b64 = Buffer.from(bytes).toString("base64");
-      return { text: `data:${mime};base64,${b64}`, mime };
+      return { text: `data:${mime};base64,${b64}`, mime, truncated: false, totalSize: size, totalBlocks: 1, blocksFetched: 1 };
     }
-    return null;
+    return { text: null, mime, truncated: false, totalSize: size, totalBlocks: 1, blocksFetched: 1 };
   } catch {
     return null;
   }
@@ -297,6 +365,35 @@ function isTextMime(mime: string): boolean {
     mime === "application/xml" ||
     mime === "application/javascript"
   );
+}
+
+// ── Host pricing ──────────────────────────────────────────────────
+
+/** Get the cheapest TRUSTED host's min_request_sats. Returns null if no hosts. */
+export async function getCheapestHostPrice(): Promise<{
+  price: number;
+  endpoint: string | null;
+  hostCount: number;
+} | null> {
+  const hosts = await getDirectory();
+  const trusted = hosts.filter((h) => h.status === "TRUSTED");
+  if (trusted.length === 0) return null;
+  const cheapest = trusted.reduce((min, h) =>
+    h.pricing.min_request_sats < min.pricing.min_request_sats ? h : min,
+  );
+  return {
+    price: cheapest.pricing.min_request_sats,
+    endpoint: cheapest.endpoint,
+    hostCount: trusted.length,
+  };
+}
+
+/** Format byte sizes: "1.2 KB", "3.4 MB", etc. */
+export function fmtSize(bytes: number): string {
+  if (bytes < 1024) return `${bytes} B`;
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+  if (bytes < 1024 * 1024 * 1024) return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+  return `${(bytes / (1024 * 1024 * 1024)).toFixed(1)} GB`;
 }
 
 // ── Helpers ────────────────────────────────────────────────────────
