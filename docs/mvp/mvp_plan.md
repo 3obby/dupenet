@@ -59,10 +59,11 @@ Layer A.1 does not require Layer B's social features (vine allocation, harmonic 
 - Paid inbox
 - Nostr social integration
 - Resilience score UI
+- Open code repository (GitHub alternative — content-addressed repos + bounty-funded maintenance + importance index for OSS. See `post_mvp.md` §Open Code Repository.)
 
 External adopters use Layer A as replaceable infrastructure. They store `asset_root` pointers, outsource distribution, and never touch Layer A.1 or B. The first-party app uses all three.
 
-**Constraint**: other platforms adopt Layer A only if they can treat it as commodity infrastructure, get boring HTTP tooling + SDKs, and are not required to join the discovery/social layer.
+**Constraint**: other platforms adopt Layer A only if they get boring HTTP tooling + SDKs and are not required to join the discovery/social layer. **Positioning**: Layer A is not commodity infrastructure — it is infrastructure bundled with demand intelligence (receipt-based consumption signal no other CDN provides). Platforms that store on Layer A get portable demand telemetry they can export. Position as "commodity storage + demand intelligence you own" — not "replaceable CDN."
 
 ### Protocol vs Materializer Boundary
 
@@ -91,7 +92,9 @@ Everything in the system is one of four operations: `PUT blob`, `POST event`, `S
 - Thread bundles: snapshot thread state as a single content-addressed object (ThreadBundleV1), fundable/pinnable as one CID
 - UI skins (upvote / tip / fortify / pin are all `event.sats > 0` with different amounts)
 
-**Author earnings model**: Protocol pays only servers (receipt-holders). Authors earn by (a) self-hosting (earn as any host), (b) materializer rebates/bonuses from materializer fees, or (c) social capital (reputation → paid inbox, commissions, trust premium). No AUTHOR_SHARE in settlement — that's a permanent bet. The reference materializer MAY distribute a portion of its fees to event authors whose refs receive demand. This is policy, not protocol.
+**Author earnings model**: Protocol pays only servers (receipt-holders). Authors earn by (a) self-hosting (earn as any host), (b) revenue share on third-party payments (materializer-enforced), or (c) social capital (reputation → paid inbox, commissions, trust premium). No AUTHOR_SHARE in settlement — that's a permanent bet.
+
+**Author revenue share (materializer convention)**: ANNOUNCE payload includes optional `author_pubkey` + `revshare_bps` (basis points, e.g. 1500 = 15%). When present, the materializer (or host) splits qualifying payments: bounty pool payouts and L402 egress fees forward `revshare_bps` to `author_pubkey`. Only third-party payments qualify — author's own FUND events and self-generated receipts are excluded (prevents farming loops). Default: 0 bps (opt-in). Hosts advertise "author splits supported" in PricingV1. This gives creators a reason to upload and market their links without requiring them to run a host. Read stays open (or paid per host policy); author earns from preservation + consumption by others.
 
 **Unified pool action**: Tip, upvote, fortify, and pin budget credits are mechanically identical — `POST /event` with `sats > 0` and `ref = pool_key`. Pins add a kind=PIN_POLICY body with drain caps and soft constraints. The protocol only sees `credit pool[ref] += sats`.
 
@@ -99,9 +102,10 @@ Everything in the system is one of four operations: `PUT blob`, `POST event`, `S
 
 | Toll | Type | Rate | Who earns |
 |------|------|------|-----------|
-| Founder royalty | Protocol | Volume-tapering (15% → ~0%) | Founder pubkey (genesis config) |
+| Pool credit royalty | Protocol | Volume-tapering (15% → ~0%) | Founder pubkey (genesis config) |
+| Egress royalty | Protocol | Flat 1% of L402 fees | Founder pubkey (genesis config) |
 | Base fee (21-210 sats) | Protocol | Dynamic (EIP-1559) | Bundler/anchor |
-| Egress (L402) | Protocol | Host-set | Host |
+| Egress (L402) | Protocol | Host-set (minus 1% egress royalty) | Host |
 | Pool payouts | Protocol | Score-weighted | Receipt-holding hosts |
 | Settlement fee | Market | Settler-set | Epoch settler |
 | Materializer ingest/query fees | Product | Materializer-set | Materializer operator |
@@ -111,7 +115,7 @@ Everything in the system is one of four operations: `PUT blob`, `POST event`, `S
 | Pin insurance / SLA policies | Product | Risk-priced | Insurer (materializer operator) |
 | Provisioning surcharge | Product | Provider-set | Managed node provider |
 
-Protocol toll: founder royalty only (volume-tapering, visible, deterministic).
+Protocol tolls: pool credit royalty (volume-tapering) + egress royalty (flat 1%). Both to founder pubkey, both visible, both deterministic. The egress royalty aligns founder income with Flywheel A (paid marketplace) — without it, L402 commerce that dominates protocol volume generates zero passive founder income.
 All service fees are market-determined — no hardcoded percentages for any operational role.
 Product tolls iterate with engagement and are the primary revenue engine at scale.
 
@@ -176,7 +180,7 @@ These are `EventV1.body` schemas the reference materializer interprets. Not prot
 | Kind | Name | ref | body | Notes |
 |------|------|-----|------|-------|
 | 0x01 | FUND | pool_key | empty | Tip/upvote/fortify are all FUND with different amounts |
-| 0x02 | ANNOUNCE | CID | title, description, mime, tags, preview, thumb_cid, access | Human metadata for content. `access`: `"open"` or `"paid"` (default). Publisher *signal*, not host *constraint* — publisher says "I'd like this free"; hosts MAY honor it if pool meets their `open_min_pool_sats` threshold, or not. Protocol doesn't enforce. Either way, hosts earn from both earning streams (bounty + vending) simultaneously. Materializer convention — see §Dual-Mode Host Economics, §New User Journey. |
+| 0x02 | ANNOUNCE | CID | title, description, mime, tags, preview, thumb_cid, access, author_pubkey?, revshare_bps? | Human metadata for content. `access`: `"open"` or `"paid"` (default). `author_pubkey` + `revshare_bps`: optional revenue share (materializer-enforced, third-party payments only — see §Author Revenue Share). Publisher *signal*, not host *constraint*. Materializer convention — see §Dual-Mode Host Economics, §New User Journey. |
 | 0x03 | POST | parent_event_id, CID, or topic_hash | inline text ≤16KiB; may contain `[ref:bytes32]` body edges | Comment on any content (blob or event); threading via ref chains; body edges create citation graph; PoW for free, sats to boost |
 | 0x04 | HOST | CID | endpoint, pricing, regions, stake | Host registration + serve announcement |
 | 0x05 | REFUSAL | CID | reason enum + scope | Operator content filtering |
@@ -342,7 +346,10 @@ No burn. At protocol scale, burned sats are economically inert against BTC suppl
 
 ### Layer 2: Founder Royalty
 
-Protocol-level extraction that flows to `FOUNDER_PUBKEY` in genesis config. Deducted at pool credit time: when `event.sats > 0`, royalty is subtracted before crediting `pool[ref]`. 100% to founder pubkey, always. No liveness gate, no governance, no splits.
+Protocol-level extraction that flows to `FOUNDER_PUBKEY` in genesis config. Two components, both 100% to founder pubkey, no liveness gate, no governance, no splits:
+
+1. **Pool credit royalty** — deducted at pool credit time: when `event.sats > 0`, royalty is subtracted before crediting `pool[ref]`. Volume-tapering (see formula below).
+2. **Egress royalty** — flat 1% of all L402 egress fees, deducted at settlement, credited to `FOUNDER_PUBKEY`. Without this, Flywheel A (paid content marketplace — potentially the majority of protocol volume) generates zero passive founder income. The pool credit royalty only triggers on funding events; the egress royalty ensures founder income correlates with both flywheels.
 
 **Formula (calibrated power-law):**
 
@@ -368,7 +375,7 @@ Cumulative volume    Royalty rate    Cumulative founder income
 100,000 BTC          0.43%          ~600 BTC
 ```
 
-**Properties:**
+**Properties (pool credit royalty):**
 - Rate halves every ~10× of volume. Clean, predictable, easy to communicate.
 - Starts aggressive (15% when the network is just the founder) — captures early value.
 - By 100 BTC cumulative: 3.75% (below Patreon, comparable to Stripe).
@@ -379,7 +386,13 @@ Cumulative volume    Royalty rate    Cumulative founder income
 - Cumulative income always increases: every new sat of volume generates founder income.
 - FOUNDER_PUBKEY is in genesis config. Cannot be changed. No governance.
 
-**Visibility:** The royalty is shown in the UI. "Protocol: X sats | Pool: Y sats." Transparent, small, declining. Defense against fork narratives is honesty, not invisibility.
+**Properties (egress royalty):**
+- Flat 1% of L402 egress fees. Does not taper. The durable passive income floor.
+- The pool credit royalty tapers to buy goodwill. The egress royalty stays flat to buy food.
+- Fork defense is the data moat (accumulated graph, provenance chain, receipt history), not the rate. A 1% egress rate is invisible at the margin (5 sats/GB at default pricing) and below any threshold that justifies a fork.
+- Deducted at epoch settlement from proven egress (receipt_token binds price_sats). Host receives 99% of their posted rate. Mechanically identical to the pool credit royalty — settlement-time deduction, not payment-time interception.
+
+**Visibility:** Both royalties shown in the UI. "Protocol: X sats | Pool: Y sats" (funding) and "Egress royalty: X sats" (fetches). Transparent, small. Defense against fork narratives is the data moat + honesty, not invisibility.
 
 **Cumulative income formula:**
 
@@ -414,7 +427,7 @@ The founder's materializer (the attention surface / leaderboard) generates produ
 - **Pro dashboard**: full battle terminal; $21/month in sats
 - **Attestation service**: cryptographic provenance verification; per-attestation fee
 
-Product revenue scales superlinearly with adoption. The protocol royalty is the passive floor; product revenue is the active ceiling. See §Post-MVP Revenue Layers for trigger conditions and build order.
+Product revenue scales superlinearly with adoption. Protocol royalties (pool credit + egress) are the passive floor; product revenue is the active ceiling. See §Post-MVP Revenue Layers for trigger conditions and build order.
 
 ---
 
@@ -532,18 +545,23 @@ EPOCH_LENGTH = 4h
 
 Shorter epochs = faster host payouts, better cash flow for small operators. 6 payout cycles/day.
 
-Host earns for a CID in an epoch if it has sufficient receipts (paid L402 or open-access — settlement doesn't distinguish):
+Host earns for a CID in an epoch proportional to proven demand (paid L402 or open-access — settlement doesn't distinguish):
 
 ```
 PAYOUT_ELIGIBLE(host, cid, epoch) if:
-  receipt_count >= 5          AND
-  unique_client_pubkeys >= 3  AND
+  receipt_count >= 1          AND
+  total_proven_sats > 0       AND
   each receipt includes valid payment_hash
+
+PAYOUT_MULTIPLIER(host, cid, epoch):
+  base = total_proven_sats                    (economic floor — cost is the real defense)
+  client_bonus = 1 + log2(unique_clients)     (smooth bonus for client diversity)
+  payout_weight = base * client_bonus
 ```
 
 Receipt token (bearer proof from mint) is the gate. PoW receipts are anti-sybil plumbing.
 
-The 5/3 threshold is a phase boundary: below it, content is self-hosted (creator earns egress only). Above it, content enters the replication market. Long-tail content doesn't need bounty payouts — it degrades gracefully by design.
+**Smooth scaling, not cliff gates.** Previous design used a hard 5/3 threshold (5 receipts, 3 unique clients) as a binary eligibility gate — creating cliff-gaming incentives. The smooth multiplier replaces this: payouts scale with proven sats spent (economic cost is the real defense), with a logarithmic bonus for client diversity. One receipt from one client earns a small payout. Five receipts from five clients earns significantly more. No cliff, no gaming discontinuity. Long-tail content earns proportionally less — same graceful degradation, smoother economics.
 
 ### Reward Formula
 
@@ -557,9 +575,8 @@ EPOCH_REWARD_BASE = 50 sats
 cid_epoch_cap = min(bounty[cid] * EPOCH_REWARD_PCT,
                     EPOCH_REWARD_BASE * (1 + floor(log2(bounty[cid] / EPOCH_REWARD_BASE + 1))))
 
-score(host) = W_CLIENTS * unique_clients
-            + W_UPTIME  * uptime
-            + W_DIVERSITY * diversity
+score(host) = payout_weight(host)
+            * (W_UPTIME  * uptime + W_DIVERSITY * diversity)
 
 host_share = cid_epoch_cap * score(host) / Σ score(eligible_hosts)
 ```
@@ -1072,6 +1089,24 @@ Composite **resilience score** = weighted formula over direct pool inputs. Clien
 
 **Graph importance** is a separate score from resilience. Resilience = "will hosts keep this alive?" (direct pool driven). Graph importance = "is this structurally central to funded discourse?" (citation driven). Both displayed; neither subsumes the other.
 
+**The importance triangle**: Three axes, always visible on every content page. The divergence between them IS the product — it creates games people play with money.
+
+| Axis | Source | What it measures |
+|------|--------|-----------------|
+| **Commitment** | Pool balance (FUND events) | How much money is behind this |
+| **Demand** | Receipt velocity (fetches/epoch) | How much people are reading this right now |
+| **Centrality** | Graph importance (citation DAG) | How structurally connected this is to other funded content |
+
+**Divergence labels** (materializer-computed, shown on content pages and leaderboard):
+
+| Label | Condition | Meaning | Game it creates |
+|-------|-----------|---------|-----------------|
+| **Underpriced** | High centrality + low pool | Structurally central but not yet funded proportionally | "This node is a bargain — fund it before others do" |
+| **Flash** | High demand + low pool | Lots of readers, no durable funding | "Popular right now — will it survive? Fund to lock it in" |
+| **Endowed** | High pool + low demand + low centrality | Funded but under-analyzed and under-read | "₿2,000 bounty, zero analysis — be the first" (analyst gold rush) |
+
+Labels are computed from percentile ranks across each axis. A node is "Underpriced" if centrality > 75th percentile AND pool < 25th percentile. Labels are mutually exclusive (highest-signal wins). Most content has no label (median on all axes = unremarkable).
+
 ### Author Signals (Pseudonymous, Automatic)
 
 | Signal | Source | Meaning |
@@ -1207,6 +1242,7 @@ Deliverables:
 - `GET /content/:ref/signals` — content resilience (from FUND events + receipts + HOST events). Includes demand (fetches/epoch from receipt count) alongside pool balance and graph importance.
 - `GET /author/:pubkey/profile` — pseudonymous reputation (from events by pubkey + receipts on their content)
 - `GET /market/quote` — supply curve from host min_bounty_sats thresholds
+- `GET /host/roi` — **host ROI scoreboard**: top earning CIDs last 24h, estimated sats/day if you mirror top 20 CIDs, median payout time. Operators join when they can estimate earnings now. This is the host conversion surface — "how much will I earn?" answered in one page.
 - Collection fan-out: materializer resolves LIST events, distributes FUND across constituents
 
 Dependencies: Phase 1 steps 1-5 (needs pools, receipts, spot-checks in Prisma)
@@ -1265,11 +1301,12 @@ Core surface:
 - Host scorecard: `/h/<pubkey>` — host reputation dashboard
 - Market quote display: "Add X sats → est. Y copies for Z days" from supply curve
 
-Embeddable widget:
+Embeddable widget (**GTM artifact — ship before media outreach, Week 2 depends on this**):
 - Compact leaderboard widget for external sites
 - Shows: content title, funding counter, funder count, Fortify button
 - Widget served by materializer (free for small sites; L402-gated for commercial embeds at volume)
 - Primary distribution mechanism: every embed on a news site drives funding back to the platform
+- The widget is the artifact handed to journalists. Without it, "embed this on your site" is words, not code. Ship before any other polish item.
 
 Widget resilience (content-addressed distribution):
 - Widget JS+CSS bundle published as a CID on the blob layer. Same replication market as any content — has its own bounty pool, hosts earn from serving it, community can fund the widget CID as infrastructure.
@@ -1397,6 +1434,11 @@ The leaderboard is the product. Seed it, share it, embed it.
 
 ```
 Week 1:    Founder uploads Tier 1 seed content (Epstein files, deplatformed archives)
+           Founder seeds the citation graph — the graph is the product, documents are nodes:
+             - 200+ body edges across 50+ docs ([ref:bytes32] citations linking documents)
+             - 20 "hub" docs with 5-10 inbound edges each
+             - 3-5 "controversy clusters" (docs that contradict each other, linked by analysis)
+             - edges don't require long comments — a one-line "[ref:X] contradicts [ref:Y]" creates structure
            Leaderboard goes live at ocdn.is — funded content visible, Fortify button works
            Embeddable widget ships (iframe snippet, works on any page)
            Founder operates 2-3 hosts + 2-3 mints
@@ -1500,11 +1542,17 @@ The normie who just arrived from Twitter sees the instrument cluster, gets it, w
 
 The Fortify flow must handle three tiers of user:
 
-1. **Lightning-native** (WebLN wallet installed): Click Fortify → amount selector (21 / 210 / 2100 sats, custom) → WebLN auto-pays → counter increments in <5 seconds. Zero friction.
+**Outcome-oriented UX**: Fortify defaults to buying a goal, not an amount. The selector shows outcomes derived from `GET /market/quote`:
+- "Keep this at 7 replicas for ~30 days" → 2,100 sats
+- "Keep this open-to-read for ~7 days" → 210 sats
+- "Custom amount" → freeform sats input
+Under the hood it's still FUND events. The UX converts sats into human-readable outcomes. This is where normies convert — "I'm purchasing an outcome" vs "I'm donating a number." Even at low host count, show the best estimate: "est. ~30 days at current drain rate."
 
-2. **Has a Lightning wallet but no WebLN**: Click Fortify → amount selector → QR code / invoice string → scan/paste in wallet app → counter increments on payment confirmation. 10-second flow.
+1. **Lightning-native** (WebLN wallet installed): Click Fortify → goal selector → WebLN auto-pays → counter increments in <5 seconds. Zero friction.
 
-3. **No Lightning wallet (the critical case)**: Click Fortify → amount selector → "Pay with Lightning" (QR/invoice) OR "Get started" → recommended wallet guide (2-3 options: Phoenix for mobile, Alby for browser, Mutiny for web-only). Keep it to one screen. Don't build a custodial onramp — link to the best self-custodial wallets with clear "install → fund → return here" steps. Accept that this user may bounce and return later. The instrument cluster already did the persuasion work; the wallet setup is homework they'll do because they're motivated.
+2. **Has a Lightning wallet but no WebLN**: Click Fortify → goal selector → QR code / invoice string → scan/paste in wallet app → counter increments on payment confirmation. 10-second flow.
+
+3. **No Lightning wallet (the critical case)**: Click Fortify → goal selector → "Pay with Lightning" (QR/invoice) OR "Get started" → recommended wallet guide (2-3 options: Phoenix for mobile, Alby for browser, Mutiny for web-only). Keep it to one screen. Don't build a custodial onramp — link to the best self-custodial wallets with clear "install → fund → return here" steps. Accept that this user may bounce and return later. The instrument cluster already did the persuasion work; the wallet setup is homework they'll do because they're motivated.
 
 Fiat onramp (post-MVP, assess when Fortify abandonment rate measurable): embedded Strike/Coinos widget for card-to-Lightning. Not at launch — adds regulatory surface and custodial dependency. But track how many users click Fortify and then don't complete payment. If >60% abandon, the fiat bridge becomes urgent.
 
@@ -1698,9 +1746,11 @@ Host (direct):
 
 **Permissionless**: Anyone can host, verify, attest, or pay for replication. No gatekeepers.
 
-**Platform adopted**: External apps use Layer A as replaceable infrastructure. Pin contracts generate B2B revenue. Receipt SDK used cross-platform.
+**Platform adopted**: External apps use Layer A for storage + demand intelligence. Pin contracts generate B2B revenue. Receipt SDK used cross-platform.
 
 **Flywheel A turning**: More apps → more egress → more hosts → more resilience → more apps.
+
+**Obsession metric (first 60 days)**: **funders-per-asset** — breadth of funding support, not depth. A CID funded by 100 people at 21 sats each is a stronger importance signal than one whale at 2,100 sats. This metric directly measures whether the system produces the unique signal (many people care) that no other platform generates. Secondary: sats-per-visitor (Fortify conversion rate). Every design decision for the first 60 days should be judged by whether it increases funders-per-asset. If it doesn't, skip it.
 
 Layer B success criteria (attention pricing, discovery, graph accumulation, lineage) are in `post_mvp.md`.
 
@@ -1732,19 +1782,19 @@ Current design: client fetches all blocks from one host, failover to next on fai
 | FOUNDER_ROYALTY_R0 | 0.15 (15%) | Starting royalty rate at genesis |
 | FOUNDER_ROYALTY_V_STAR | 125,000,000 sats (1.25 BTC) | Scale constant; rate halves every ~10× volume |
 | FOUNDER_ROYALTY_ALPHA | log(2)/log(9) ≈ 0.3155 | Power-law decay exponent |
+| EGRESS_ROYALTY_PCT | 0.01 (1%) | Flat % of L402 egress fees to founder pubkey. Durable passive income floor. Does not taper. |
 | PROVISIONING_SURCHARGE | 21% | Managed node provisioning margin (product-level) |
 | OPERATOR_STAKE | 2,100 sats | Sybil resistance, accessible |
-| RECEIPT_MIN_COUNT | 5 | Min receipts for payout eligibility |
-| RECEIPT_MIN_UNIQUE | 3 | Min distinct client pubkeys |
+| RECEIPT_MIN_COUNT | 1 | Min receipts for payout eligibility (smooth scaling replaces hard 5/3 gate) |
+| RECEIPT_MIN_UNIQUE | — | Removed as hard gate. Client diversity is now a smooth log2 bonus multiplier on payout_weight, not a binary threshold. |
 | POW_TARGET_BASE | 2^240 | ~200ms on mobile |
 | POW_ESCALATION_THRESHOLD | 8 | Receipts/day before difficulty ramps |
 | UNBONDING_PERIOD | 7 days | Catch misbehavior |
 | EPOCH_LENGTH | 4h | Reward cycle + receipt aggregation (6 cycles/day) |
 | EPOCH_REWARD_PCT | 2% | % of bounty pool per CID per epoch (total cap, split by score) |
 | EPOCH_REWARD_BASE | 50 sats | Base cap per CID per epoch; scales with log2(bounty/base+1) |
-| W_CLIENTS | 0.5 | Score weight: unique clients in epoch |
-| W_UPTIME | 0.3 | Score weight: uptime ratio |
-| W_DIVERSITY | 0.2 | Score weight: ASN/geo diversity contribution |
+| W_UPTIME | 0.6 | Score weight: uptime ratio (rebalanced after W_CLIENTS absorbed into payout_weight) |
+| W_DIVERSITY | 0.4 | Score weight: ASN/geo diversity contribution |
 | AUDIT_REWARD_PCT | 30% | Challenger's share of withheld epoch reward on proven mismatch |
 | AGGREGATOR_FEE_PCT | 3% | MVP default settlement fee (deducted from epoch cap before host split). Market-determined post-MVP. |
 | MIN_REQUEST_SATS | 3 sats | Egress grief floor (covers marginal serving cost) |
@@ -1771,8 +1821,10 @@ Current design: client fetches all blocks from one host, failover to next on fai
 - PoW difficulty: `TARGET_BASE >> floor(log2(receipt_count + 1))`
 - Block selection: `PRF(epoch_seed || file_root || client) mod num_blocks`
 - Pin drain_rate: `budget_sats / duration_epochs`
+- Payout weight: `total_proven_sats * (1 + log2(unique_clients))` — smooth scaling, no cliff
 - Collection fan-out share: `floor(total_sats * item.size / total_collection_size)` per constituent
 - Resilience score: weighted composite of replica count, host diversity, demand trend, sustainability estimate
+- Importance triangle labels: percentile-based (Underpriced / Flash / Endowed — see §Signal Layer)
 
 Layer A.1 constants are tunable at the same granularity as Layer A (epoch boundaries or local). Layer B constants (vine allocation, discovery, inbox) are in `post_mvp.md`.
 
@@ -1890,6 +1942,8 @@ Deferred design decisions from external review. Each has a trigger condition —
 ## Post-MVP Revenue Layers
 
 Deferred product layers that build on the leaderboard + protocol foundation. Each requires real adoption data. Build when trigger fires, not before. All are materializer products — zero protocol changes required.
+
+**Day-1 data schema constraint**: The graph dataset appreciates over time. Every event, receipt, body edge extraction, graph computation, and threshold crossing must be stored in a queryable, exportable schema from day 1 — even though the API products below are built later. Commit to never losing the raw event stream (append-only immutable log). Materialized views are disposable and rebuildable from the log. Data thrown away or stored in a migration-hostile format is revenue destroyed. The institutional data schema is a day-1 design decision, not a post-MVP trigger.
 
 ### Priority Replication Auctions (convex spike capture)
 

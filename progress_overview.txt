@@ -17,9 +17,9 @@ PHASE 1: BLOB UTILITY (Layer A)
 [x] PUT /block/:cid                  SHA256 verified on receive, rejects mismatches
 [x] GET /block/:cid                  serves bytes; L402-gated when LND configured, free in dev mode
 [x] PUT /file/:root                  validates file_root = SHA256(canonical(manifest)), checks all blocks exist
-[x] GET /file/:root                  returns manifest (in-memory Map)
+[x] GET /file/:root                  returns manifest (persisted to disk via MetadataStore)
 [x] PUT /asset/:root                 validates asset_root = SHA256(canonical(AssetRoot)), checks file exists
-[x] GET /asset/:root                 returns asset (in-memory Map)
+[x] GET /asset/:root                 returns asset (persisted to disk via MetadataStore)
 [x] HEAD /asset/:root                returns size, kind, mime headers
 [x] GET /pricing                     returns PricingV1
 [x] GET /health                      gateway health check
@@ -107,7 +107,10 @@ COORDINATOR — PERSISTENCE + AGGREGATION
 [x] Event log persistence               append-only Postgres via prisma.event.create
 [x] POST /receipt/submit                validates via receipt-sdk, checks epoch range + replay, stores in Prisma
 [x] Receipt validation pipeline         verifyReceiptV2 checks client_sig, PoW, receipt_token against mint pubkeys
-[x] Epoch aggregation (physics)         aggregateReceipts(), isPayoutEligible() — pure receipt grouping + 5/3 threshold
+[x] Epoch aggregation (physics)         aggregateReceipts(), isPayoutEligible() — pure receipt grouping
+    - NOTE: 5/3 hard threshold replaced with smooth payout_weight multiplier (see §Economics Rework below)
+    - isPayoutEligible() now requires receipt_count >= 1 AND total_proven_sats > 0
+    - payout_weight = total_proven_sats * (1 + log2(unique_clients)) — CODE UPDATE PENDING
 [x] Epoch settlement (coordinator)      settleEpoch() — aggregate receipts, compute payouts, drain bounty, persist EpochSummary
 [x] POST /epoch/settle                  validates epoch is closed, calls settleEpoch(), idempotent (no double-spend)
 [x] GET /epoch/summary/:epoch           returns settlement results for a given epoch
@@ -419,7 +422,8 @@ Architectural decision (2025-02-08):
   - Kind interpretation, threading, ranking, author rewards, pin lifecycle, moderation = materializer.
   - Tip / upvote / fortify / pin are all the same action: POST /event with sats > 0.
   - Pins are kind=PIN_POLICY events with drain policy in body. Materializer enforces SLA.
-  - Author earnings: not in protocol. Authors self-host (earn as hosts) or earn via materializer bonuses.
+  - Author earnings: not in protocol. Authors self-host (earn as hosts), earn via revenue share
+    (revshare_bps on ANNOUNCE — materializer-enforced, third-party payments only), or materializer bonuses.
   - Existing POST /tip, POST /host/register, POST /content/announce → collapse into POST /event.
   - ReceiptV2 + epoch settlement untouched. Don't fix what's not broken.
 
@@ -867,7 +871,8 @@ DocRef: MVP_PLAN:§Post-MVP Assessment Queue
     - receipt submission already opt-in; casual readers (L402 only) have no protocol exposure
     - ephemeral pubkeys don't weaken anti-sybil: hard defense is economic (L402 cost + mint token),
       not identity-based (key generation is free; PoW escalation per-pubkey already trivially bypassed)
-    - RECEIPT_MIN_UNIQUE=3 is a tripwire, not a wall (3 throwaway keys cost zero)
+    - RECEIPT_MIN_UNIQUE removed; client diversity is now a smooth log2 bonus multiplier
+      on payout_weight, not a binary threshold (see mvp_plan.md §Epoch Structure)
     - lean on payment-based diversity signals: distinct payment_hash, temporal spread, graph breadth
     - aggregator remains MVP privacy trust point (same as all founder dependencies)
     - long-term: blinded/bearer receipts (Cashu-style) for zero-knowledge demand proofs
@@ -962,6 +967,167 @@ Sections updated in mvp_plan.md:
     - §Flywheel A (host self-upload vending-first noted)
     - §GET /feed/funded (demand field added)
     - §GET /content/:ref/signals (demand field added)
+
+
+================================================================================
+MVP PLAN UPDATE: ECONOMICS REWORK + STRATEGIC ADDITIONS (2026-02-10)
+================================================================================
+
+Changes applied to mvp_plan.md from CEO/strategic review. Cross-referenced
+against codebase to identify all rework needed.
+
+## Protocol Rework — Egress Royalty (new mechanic)
+
+mvp_plan.md now specifies EGRESS_ROYALTY_PCT = 0.01 (flat 1% of L402 egress fees,
+deducted at epoch settlement, credited to FOUNDER_PUBKEY). Code has no egress
+royalty path.
+
+[ ] EGRESS_ROYALTY_PCT constant          packages/physics/src/constants.ts — add 0.01
+[ ] Egress royalty function              packages/physics/src/royalty.ts — computeEgressRoyalty(egress_sats)
+    - flat 1%, no taper (distinct from pool credit royalty)
+    - deducted from proven egress at settlement (receipt_token binds price_sats)
+[ ] Settlement egress deduction          apps/coordinator/src/views/epoch-settlement.ts
+    - settleEpoch() must sum proven egress per host per CID per epoch
+    - deduct 1% before crediting host share
+    - credit FOUNDER_PUBKEY with deducted amount
+[ ] Egress royalty tests                 packages/physics/test/ — new test file
+    - flat 1% at all volumes, correct deduction, host receives 99%
+[ ] Coordinator settlement tests         apps/coordinator/test/ — update existing epoch settlement tests
+    - verify egress royalty deducted alongside aggregator fee + pool credit royalty
+
+## Protocol Rework — Smooth Payout Multiplier (replaces 5/3 hard gate)
+
+mvp_plan.md now replaces hard 5/3 threshold with smooth payout_weight formula.
+Code currently enforces receipt_count >= 5 AND unique_clients >= 3 as binary gate.
+
+Files to change:
+    packages/physics/src/constants.ts
+    packages/physics/src/epoch-aggregation.ts (isPayoutEligible)
+    packages/physics/src/reward.ts (computeHostScore, distributeRewards)
+
+[ ] Constants update                     packages/physics/src/constants.ts
+    - RECEIPT_MIN_COUNT: 5 → 1
+    - RECEIPT_MIN_UNIQUE_CLIENTS: remove (or deprecate)
+    - W_CLIENTS: remove (absorbed into payout_weight)
+    - W_UPTIME: 0.3 → 0.6
+    - W_DIVERSITY: 0.2 → 0.4
+[ ] isPayoutEligible() rewrite           packages/physics/src/epoch-aggregation.ts
+    - old: receipt_count >= 5 AND unique_clients >= 3
+    - new: receipt_count >= 1 AND total_proven_sats > 0
+[ ] payout_weight() function             packages/physics/src/epoch-aggregation.ts or reward.ts
+    - payout_weight = total_proven_sats * (1 + log2(unique_clients))
+    - needs total_proven_sats field on receipt group (sum of price_sats across receipts)
+[ ] computeHostScore() rewrite           packages/physics/src/reward.ts
+    - old: W_CLIENTS * uniqueClients + W_UPTIME * uptimeRatio + W_DIVERSITY * diversityContribution
+    - new: payout_weight * (W_UPTIME * uptimeRatio + W_DIVERSITY * diversityContribution)
+    - HostScore type may need total_proven_sats field added
+[ ] Epoch aggregation tests              packages/physics/test/ — update existing
+    - hosts with 1 receipt / 1 client now eligible (small payout_weight)
+    - hosts with 5 receipts / 5 clients get ~3.3x multiplier vs 1/1
+    - old tests asserting ineligibility below 5/3 must be updated or removed
+[ ] Score computation tests              packages/physics/test/ — update existing
+    - expected scores change due to formula rewrite
+    - verify smooth scaling: no discontinuities, no cliffs
+[ ] Coordinator settlement tests         apps/coordinator/test/ — verify updated formula flows through
+
+## Schema Update — AnnouncePayload Author Fields
+
+mvp_plan.md now includes author_pubkey? + revshare_bps? on ANNOUNCE payload.
+Code has no author fields in AnnouncePayload.
+
+[ ] AnnouncePayload schema update        packages/physics/src/schemas/event.ts
+    - add: author_pubkey: Type.Optional(Type.String({ minLength: 64, maxLength: 64 }))
+    - add: revshare_bps: Type.Optional(Type.Integer({ minimum: 0, maximum: 10000 }))
+    - backward-compatible (Optional fields, additionalProperties: false → true or keep false + add)
+[ ] CLI --author-pubkey, --revshare      apps/cli/src/commands/upload.ts
+    - optional flags on `dupenet upload`
+    - populate author_pubkey + revshare_bps in ANNOUNCE body
+[ ] Author split enforcement             apps/coordinator/src/views/epoch-settlement.ts
+    - at settlement: if ANNOUNCE for CID has revshare_bps, split host payout
+    - only third-party payments qualify (exclude events where from == author_pubkey)
+    - deferred until materializer has enough data to verify third-party constraint
+[~] Author split — mark as design-ready  schema in place, enforcement deferred to post-MVP or when
+    first author requests it. Don't block launch.
+
+## Materializer Endpoints — New
+
+[ ] GET /host/roi                        apps/coordinator/src/views/materializer.ts
+    - top earning CIDs last 24h (from EpochSummaryRecords)
+    - estimated sats/day if mirror top 20 CIDs (from bounty feed + drain rates)
+    - median payout time (from settlement timestamps)
+    - host conversion surface: "how much will I earn?"
+[ ] GET /market/quote                    apps/coordinator/src/views/materializer.ts (already [ ] in Sprint 7d)
+    - supply curve from host min_bounty_sats thresholds
+    - outcome quotes: "N replicas for ~M days at X sats"
+    - consumed by FortifyButton for goal-oriented UX
+
+## Materializer Endpoints — Graph (prerequisite for triangle labels)
+
+[ ] Body edge extraction at ingest       apps/coordinator/src/views/materializer.ts
+    - parse [ref:bytes32] tokens from POST/ANNOUNCE bodies on POST /event
+    - Prisma model: BodyEdge { source_event_id, target_ref, edge_sats }
+    - index: (target_ref) for inbound citation queries
+    - BLOCKS: triangle labels, graph importance, orphan score, cluster view
+[ ] Graph importance computation         packages/physics or apps/coordinator
+    - weighted PageRank over citation DAG (ref + body + list edges)
+    - incremental recompute on new events
+[ ] Importance triangle labels           apps/coordinator/src/views/materializer.ts
+    - compute percentile ranks: pool (Commitment), receipts/epoch (Demand), PageRank (Centrality)
+    - assign labels: Underpriced (high centrality + low pool), Flash (high demand + low pool),
+      Endowed (high pool + low demand + low centrality)
+    - expose via GET /content/:ref/signals or GET /feed/funded enrichment
+
+## Web App — UI Changes
+
+[ ] FortifyButton goal selector          apps/web/src/components/FortifyButton.tsx
+    - phase 1: show estimated outcomes alongside amounts ("210 sats ≈ ~7 days")
+    - phase 2: goal selector ("keep at N replicas for ~M days") → computes sats
+    - depends on GET /market/quote endpoint
+[ ] Widget deployment validation         apps/web — verify widget is deployment-ready
+    - widget is [x] built (GET /api/widget, GET /api/widget/:ref)
+    - validate: works as standalone iframe embed on external page
+    - validate: cached/degraded mode when coordinator unreachable
+    - GTM artifact — must be ready before Week 2 media outreach
+[ ] Funders-per-asset tracking           apps/coordinator + apps/web
+    - funder_count already computed from distinct `from` pubkeys on FUND events ✓
+    - add: expose as obsession metric in leaderboard header or /api/stats
+    - add: track trend (funders-per-asset this week vs last week)
+
+## Pre-Existing Blockers (now more critical)
+
+[x] Gateway manifest persistence         apps/gateway/src/storage/metadata-store.ts
+    - ALREADY FIXED — persists to _meta/manifests/ and _meta/assets/ on disk
+    - loads on startup, survives restarts
+    - progress_overview lines 20-22 still say "in-memory Map" — stale text ✓
+
+## Seed Content — Graph Seeding (content task, not code)
+
+Depends on body edge extraction being implemented first.
+
+[ ] Seed 200+ body edges                 via `dupenet post` with [ref:bytes32] citations
+    - 20 hub docs with 5-10 inbound edges each
+    - 3-5 controversy clusters (docs contradicting each other, linked by analysis)
+    - edges can be short: "[ref:X] contradicts [ref:Y]"
+[ ] Verify triangle labels render        after graph importance + body edges live
+    - at least one item should show Underpriced, Flash, or Endowed label
+
+
+================================================================================
+STALE REFERENCES (text in this file that now contradicts mvp_plan.md)
+================================================================================
+
+Audit date: 2026-02-10. Items below are text-only fixes in this file.
+
+[ ] Line 20-22: "in-memory Map"          gateway now persists manifests/assets to disk (metadata-store.ts)
+    - update to: "returns manifest (persisted to disk via MetadataStore)"
+[ ] Line 422: author earnings            old: "Authors self-host or earn via materializer bonuses"
+    - update to include author revenue share convention (revshare_bps on ANNOUNCE)
+[ ] Line 870: RECEIPT_MIN_UNIQUE=3       old: "RECEIPT_MIN_UNIQUE=3 is a tripwire"
+    - update: RECEIPT_MIN_UNIQUE removed; client diversity is smooth log2 bonus multiplier
+[ ] Line 109-111: epoch aggregation      old: references "5/3 threshold" and eligibility gate
+    - update to reflect smooth payout_weight formula
+[ ] Line 116: AGGREGATOR_FEE_PCT         still correct (3% MVP default), but settlement now also
+    deducts EGRESS_ROYALTY_PCT (1%) — note the new deduction
 
 
 LEGEND: [x] done  [~] partial/stub  [ ] not started

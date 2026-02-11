@@ -806,6 +806,62 @@ As multiple aggregators emerge, aggregation becomes a race condition:
 
 ---
 
+## Open Code Repository (GitHub Alternative)
+
+The protocol primitives (content-addressed blobs, events, bounty pools, receipts, citation graph) map naturally to a code hosting platform. This is a compelling Layer B materializer application — zero protocol changes needed.
+
+### Why the Architecture Fits
+
+| Protocol primitive | Code hosting equivalent |
+|-------------------|------------------------|
+| Blocks → Manifests → AssetRoots | Git objects (blobs → trees → commits). SHA256 content addressing IS git's object model. |
+| kind=ANNOUNCE | Release / tag publication |
+| kind=POST (ref=repo CID) | Issue, PR comment, code review |
+| kind=LIST | Branch HEAD listing, repository index |
+| kind=FUND | Sponsorship / maintainer funding |
+| SupersedesV1 (post_mvp) | Force push / version update / deprecation notice |
+| Bounty pools | Repo sustainability funding. Pool drains to hosts serving the repo. |
+| Pin contracts | Long-term maintenance: "keep this library at 5 replicas for 2 years" |
+| Receipts | Honest usage signal. Each `git clone` / dependency fetch costs real sats — replaces gameable npm download counts. |
+| Body edges (`[ref:bytes32]`) | Dependency graph between repos. Weighted by economic commitment. |
+| Importance triangle | **The killer feature**: "this library is depended on by 200 funded projects but has zero funding itself" = **Underpriced** label. The importance index for code. |
+| Author revenue share | Maintainers earn `revshare_bps` from egress + bounty on their repos. Upload a popular library → earn per clone. No begging for sponsorships. |
+| Proof URLs + Bitcoin anchor | Audit trail: "this commit existed at this time, provably." Compliance, reproducible builds, supply chain verification. |
+| L402 paid fetch | Premium repos, private dependencies, paid API access. Vending-first for commercial OSS. |
+
+### What the Materializer Adds (Not Protocol)
+
+A code-hosting materializer provides the workflows GitHub users expect. All are materializer-level views over the event stream:
+
+- **Diff rendering**: compute diffs between AssetRoot versions (same CID-based versioning)
+- **Merge/PR workflow**: kind=POST events with structured body (proposed changes, review status, merge action)
+- **Branch management**: LIST events per branch HEAD; SupersedesV1 chains for history
+- **CI/CD integration**: materializer triggers builds on new ANNOUNCE events, publishes results as ATTEST events
+- **Code search**: materializer indexes blob contents at ingest time
+- **Permission model**: materializer-enforced write access per pubkey per repo (not protocol — anyone can fork by uploading their own AssetRoot referencing the original via body edge)
+- **Dependency graph visualization**: citation DAG rendered as interactive dependency tree with economic weights
+
+### Why This Wins vs Existing Alternatives
+
+| Alternative | What it lacks that this provides |
+|-------------|----------------------------------|
+| **GitHub** | Centralized, censorable, no economic demand signal, maintainers earn nothing from usage |
+| **GitLab/Gitea** | Self-hosted but no economic layer; sustainability still unsolved |
+| **Radicle** | P2P but no payment rails, no bounty pools, no demand intelligence |
+| **SourceHut** | Opinionated but no content addressing, no economic sustainability model |
+
+The unique value: **the importance index for open source.** No other platform answers "which libraries does humanity value enough to pay to keep alive?" The dependency graph weighted by bounty pools + receipt velocity produces a signal that npm stars, GitHub stars, and download counts cannot — because those are free and gameable. This signal is valuable to: security auditors (which dependencies are economically critical?), enterprises (which libraries are sustainably funded?), investors (which OSS projects have real demand?), and the libraries themselves (fund the Underpriced nodes before they die).
+
+### Trigger
+
+Build when Layer A has 50+ hosts and the blob layer handles multi-MB repos reliably. The materializer is the complex part; the protocol is ready now.
+
+### Revenue
+
+Same toll booths as the main platform: egress royalty (1%) on every `git clone` + pool credit royalty on repo sponsorships + materializer query fees on code search / CI / dependency analysis. Author revenue share gives maintainers a cut of every clone. The institutional API ("real-time dependency importance feed") is high-value for enterprise customers.
+
+---
+
 ## Future Extensions
 
 - Guardian quorum on messages (P2+)
