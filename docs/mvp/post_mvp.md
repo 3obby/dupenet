@@ -144,22 +144,35 @@ Rank on signals that cost money, require time, and leave permanent traces. Ignor
 
 ---
 
-### Tip Allocation (Harmonic)
+### Tip Allocation (Harmonic + Patron)
 
-Tips allocate 95% to bounty pools using harmonic distribution across content hierarchy. 5% protocol fee funds infrastructure and development.
+Tips split into three sinks: protocol fee, vine (harmonic up ancestry), and patron (pro-rata to prior funders). The patron bucket rewards early/correct funding decisions with trust-minimized yield — no tradable shares, no secondary market, just computed allocation from on-chain tip history.
 
 ```
-TIP_PROTOCOL_FEE = 5%   # to protocol operator
-TIP_BOUNTY_SHARE = 95%  # to bounty pools (harmonic)
+TIP_PROTOCOL_FEE = 5%    # to protocol operator
+TIP_VINE_SHARE   = 90%   # to bounty pools (harmonic across ancestry)
+TIP_PATRON_SHARE = 5%    # to prior funders (weighted by amount × time)
 
-allocation(level_k, tip_T, depth_N) = (T * 0.95) / (k + 1) / H_(N+1)
+vine_allocation(level_k, tip_T, depth_N) = (T * 0.90) / (k + 1) / H_(N+1)
+
+patron_weight(funder_f, cid) = fund_amount(f, cid) * epochs_since_fund(f, cid)
+patron_payout(f, tip_T) = T * 0.05 * patron_weight(f) / Σ patron_weight(all_funders)
 
 where:
   k = 0 is target, k = N is topic index
   H_(N+1) = harmonic number = Σ(1/i) for i=1 to N+1
 ```
 
-5% is below industry standard (Stripe 2.9%+30¢, Patreon 5-12%, App Store 30%). Covers bounty pool accounting, harmonic allocation computation, payout processing, fraud detection.
+**Patron bucket anti-gaming:**
+- `PATRON_MIN_HOLD_EPOCHS = 6` (1 day) — no yield until funder has held for 6 epochs
+- Self-tip exclusion: if tipper pubkey == any prior funder pubkey, their patron share reroutes to vine bucket
+- Patron bucket only active when `total_pool(cid) > PATRON_REWARD_MIN_POOL` (default 500 sats) — prevents micro-pool gaming
+- Time weight means early funders earn exponentially more than late funders on the same CID — "being early" is the alpha, not "being big"
+- No tradable instrument: patron yield is computed from the tip log, not from minted tokens. Nothing to trade, nothing to securitize.
+
+**Flywheel**: "Underpriced" flag in UI → patron sees opportunity → funds CID → content becomes more durable → more people see it → more tips → patron earns → flag moves to "Funded" → next underpriced CID gets attention.
+
+5% protocol fee is below industry standard (Stripe 2.9%+30¢, Patreon 5-12%, App Store 30%). Covers bounty pool accounting, harmonic allocation computation, patron weight computation, payout processing, fraud detection.
 
 ---
 
@@ -626,6 +639,10 @@ ParentPointerV1 {
 | Constant | Value | Rationale |
 |----------|-------|-----------|
 | TIP_PROTOCOL_FEE | 5% | Protocol processing fee on tips (below industry standard) |
+| TIP_VINE_SHARE | 90% | Harmonic allocation across ancestry (was 95%, now shares with patron bucket) |
+| TIP_PATRON_SHARE | 5% | Pro-rata to prior funders, weighted by amount x epochs_held |
+| PATRON_MIN_HOLD_EPOCHS | 6 | Minimum hold time before funder earns patron yield (1 day) |
+| PATRON_REWARD_MIN_POOL | 500 sats | Patron bucket inactive below this pool balance |
 | INBOX_MIN_BID | 21 sats | Default attention price |
 | INBOX_MAX_SIZE | 64 KB | Prevent abuse |
 | MAX_PROPAGATION_DEPTH | 20 | Cap vine allocation |
@@ -637,7 +654,8 @@ ParentPointerV1 {
 | DISCOVERY_HOST_SAMPLE | 5 | Hosts to test per CID |
 
 **Derived (Layer B)**:
-- Tip allocation: Harmonic series `1/(k+1)/H` (applied to 95% bounty share)
+- Vine allocation: Harmonic series `1/(k+1)/H` (applied to 90% vine share)
+- Patron allocation: `fund_amount * epochs_held / Σ weights` (applied to 5% patron share)
 - MIN_TIP: `ceil(H_(depth+1))` ≈ 4-8 sats
 - Topic strength: Sum of content bounties beneath
 

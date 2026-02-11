@@ -1519,4 +1519,295 @@ SPRINT C IMPLEMENTATION (2026-02-10)
     Total: 293/293 tests pass + Next.js build clean + coordinator tsc clean (1 pre-existing TS6133)
 
 
+================================================================================
+MVP PLAN UPDATE: STREAMING/ACCESS ECONOMICS + UPLOAD-QUOTE-REVIEW (2026-02-11)
+================================================================================
+
+Architectural reframe applied to mvp_plan.md. Core insight: durability and access
+are separate products. Pools fund proof-of-holding (time-based). Egress funded
+separately (L402 / PoW / funder-sponsored). Hosts are stores, not libraries.
+
+Changes applied:
+    - §Core Thesis — added #10 (durability and access are separate products)
+    - §Egress Pricing — replaced with §Layered Access Gating (default menu / PoW preview / full access)
+    - §Dual-Mode Host Economics — durability stream (holding) vs vending stream (serving)
+    - §Receipt economics table — PoW reads generate no receipts, don't drain pools
+    - §Epoch-Based Rewards — dual proof model (spot-checks + receipts), time-based drain
+    - §Fetch Flow — added §Session/Tab Model for streaming + batched payment
+    - §Upload/Ingestion — replaced permissionless PUT with quote-review model
+    - §Interface table — staging endpoints, accept/pass endpoints
+    - §Author Revenue Share — upgraded from materializer-enforced to settlement-enforced
+    - §Protocol Boundary — author revshare enforcement added to protocol list
+    - §PreserveOrderV1 — added access_sats + access_pow_fallback fields
+    - §Event Kind table — added 0x0C UPLOAD_QUOTE, updated ANNOUNCE + PRESERVE
+    - §Protocol Enforcement — stake verification deferred with rationale
+    - §Enforcement Audit — new section after Trust Assumptions
+    - §Constants — 7 new (FREE_POW_TARGET, SESSION_*, REVIEW_*, UPLOAD_MIN_QUOTE, ACCESS_BUDGET_MIN)
+    - §Analogies — reframed as "PirateBay x Plex — paid bytes on demand"
+    - §Deferred Decisions — added #17 (sessions), #18 (PoW free tier), #19 (HTLC escrow), #20 (author proof)
+
+Also applied to post_mvp.md:
+    - §Tip Allocation — 90% vine / 5% patron / 5% protocol (was 95/5)
+    - Patron bucket: pro-rata to prior funders, weighted by amount × epochs_held
+    - New constants: TIP_VINE_SHARE, TIP_PATRON_SHARE, PATRON_MIN_HOLD_EPOCHS, PATRON_REWARD_MIN_POOL
+
+## COMPLETED WORK REQUIRING INVESTIGATION / REWORK
+
+### 1. Epoch settlement: spot-check as eligibility (INVESTIGATE)
+
+Current: isPayoutEligible() requires receipt_count >= 1 AND total_proven_sats > 0.
+Plan now says: spot_check_pass OR (receipt_count >= 1 AND total_proven_sats > 0).
+Hosts that pass spot-checks but have zero receipts (e.g. serving PoW-gated free reads
+only) should still earn from the durability stream.
+
+Files:
+    [ ] packages/physics/src/epoch-aggregation.ts — isPayoutEligible() add spot-check path
+    [ ] apps/coordinator/src/views/epoch-settlement.ts — settleEpoch() incorporate spot-check data
+    [ ] packages/physics/test/vectors/epoch-aggregation.test.ts — add spot-check-only eligibility tests
+    [ ] apps/coordinator/test/epoch-settlement.test.ts — host earns from spot-checks alone
+
+### 2. Free preview tier → PoW-gated free tier (REWORK)
+
+Current: blocks ≤ 16 KiB served free, no PoW. IP rate-limit deferred.
+Plan now: PoW required for ALL free reads (not just >16 KiB). Default menu
+(metadata ≤16 KiB from materializer) stays free. Gateway blocks require PoW.
+Difficulty scales with concurrent demand per CID.
+
+Files:
+    [ ] apps/gateway/src/routes/block.ts — replace size-based free gate with PoW verification
+    [ ] packages/physics/src/pow.ts (or event-v1.ts) — FREE_POW_TARGET, verifyFreeTierPow()
+    [ ] packages/physics/src/constants.ts — FREE_POW_TARGET = 2^240 (base)
+    [ ] apps/gateway/test/ — PoW-gated free tier tests (valid PoW served, no PoW rejected, difficulty scaling)
+
+### 3. Receipt-less free reads (REWORK)
+
+Current: "Open-access fetches generate receipts identical to paid fetches" (line 957-961).
+Plan now: PoW-gated free reads generate NO receipts and NO pool drain. Only L402 and
+funder-sponsored reads generate receipts. Lightweight demand markers (host-logged) only.
+
+Affects:
+    [ ] apps/gateway/src/routes/block.ts — PoW-served blocks: no receipt_token, no mint call
+    [ ] apps/coordinator/src/views/epoch-settlement.ts — verify only L402 receipts counted
+    [ ] Demand signal (GET /feed/funded) — may need separate demand_marker counter vs receipt count
+    Note: instrument cluster demand field (line 971-974) needs re-evaluation
+
+### 4. Gateway upload routes → staging + quote-review (REWORK)
+
+Current: PUT /block, PUT /file, PUT /asset are permissionless (hash-verified, immediate).
+Plan now: PUT with ?staging=true → quote → escrow → review → accept/pass/timeout.
+
+Files:
+    [ ] apps/gateway/src/routes/block.ts — add ?staging=true mode (store but don't serve)
+    [ ] apps/gateway/src/routes/file.ts — staging mode
+    [ ] apps/gateway/src/routes/asset.ts — staging mode + return UploadQuoteV1
+    [ ] apps/gateway/src/routes/upload.ts (NEW) — POST /upload/:root/accept, POST /upload/:root/pass
+    [ ] apps/gateway/src/storage/ — staging area separate from live storage
+    [ ] packages/physics/src/schemas/event.ts — UploadQuotePayload for kind=0x0C
+    [ ] packages/physics/src/constants.ts — EVENT_KIND_UPLOAD_QUOTE=0x0C, REVIEW_FEE, REVIEW_WINDOW_EPOCHS, etc.
+    [ ] apps/gateway/test/ — staging upload, quote issuance, accept/pass/timeout tests
+
+### 5. Author revshare: materializer → settlement enforcement (REWORK)
+
+Current: [ ] Author split enforcement marked as deferred (line 1074-1078).
+Plan now: settlement-enforced — hosts must prove author payment to claim epoch reward.
+This changes the enforcement from "materializer splits when it feels like it" to
+"settler withholds epoch reward without proof."
+
+Files:
+    [ ] packages/physics/src/schemas/event.ts — AnnouncePayload: author_pubkey + revshare_bps (already tracked)
+    [ ] apps/coordinator/src/views/epoch-settlement.ts — conditional epoch reward on author payment proof
+    [ ] apps/coordinator/src/server.ts — endpoint for host to submit author payment proof
+    [ ] packages/physics/src/schemas/ — ReceivedV1 attestation schema (author signs "I got paid")
+    [ ] apps/coordinator/test/epoch-settlement.test.ts — withhold epoch reward without proof tests
+
+### 6. PreservePayload needs access_sats + access_pow_fallback (UPDATE)
+
+Current: [ ] PreservePayload schema pending (line 1207-1211). Does not include access fields.
+Plan now: PreserveOrderV1 has access_sats (free-read budget) + access_pow_fallback (bool).
+
+Files:
+    [ ] packages/physics/src/schemas/event.ts — add access_sats, access_pow_fallback to PreservePayload
+    [ ] packages/physics/src/constants.ts — ACCESS_BUDGET_MIN = 100 sats
+    Note: access budget deduction accounting is deferred (#18)
+
+### 7. CLI upload command → quote-review flow (REWORK)
+
+Current: `dupenet upload` does PUT /block × N → PUT /file → PUT /asset directly.
+Plan now: push to staging → receive quote → pay escrow → wait for accept/pass.
+
+Files:
+    [ ] apps/cli/src/commands/upload.ts — staging push, quote display, escrow payment, poll for accept
+    [ ] apps/cli/src/lib/http.ts — new staging upload helpers
+    Note: backward-compat flag (--direct) for host self-upload (skip review)
+
+### 8. New event kind constant: UPLOAD_QUOTE (ADD)
+
+Files:
+    [ ] packages/physics/src/constants.ts — EVENT_KIND_UPLOAD_QUOTE = 0x0C
+    [ ] packages/physics/src/schemas/event.ts — UploadQuotePayload { cost_sats, review_window_epochs, included_epochs }
+
+### 9. Session/tab constants (ADD — code deferred, constants ready)
+
+Files:
+    [ ] packages/physics/src/constants.ts — SESSION_MIN_DEPOSIT_SATS, SESSION_MAX_BLOCKS, SESSION_TTL,
+        SESSION_CLOSE_FEE, FREE_POW_TARGET
+
+## STALE REFERENCES IN THIS FILE (text contradicts updated mvp_plan.md)
+
+[ ] Line 452-453: "Author earnings: not in protocol"
+    - now: revshare enforcement IS at settlement level (protocol), not materializer
+    - update: "Author earnings: settlement-enforced revshare (conditional epoch reward)"
+
+[ ] Line 955-961: "Open-access fetches generate receipts identical to paid fetches"
+    - now: PoW-gated free reads generate NO receipts. Only L402/sponsored reads generate receipts.
+    - update: reflect receipt economics table from mvp_plan.md
+
+[ ] Line 971-974: "Open-access receipts count → demand reflects real readership"
+    - now: PoW reads generate lightweight demand markers only, not receipts
+    - demand field should note this distinction
+
+[ ] Line 67: "Stake locking via LND — TODO"
+    - now: intentionally deferred (not just TODO). Receipt + spot-check gates sufficient at MVP scale.
+    - update: "Stake locking via LND — DEFERRED (receipt + spot-check sufficient at 5-20 host scale)"
+
+[ ] Line 854: "Stake locking via LND — verify stake payment on host registration (currently stubbed)"
+    - same: update to "DEFERRED" with rationale
+
+[ ] Line 201-204: Free preview tier description
+    - now: PoW-gated, not just size-gated. Update when PoW tier implemented.
+
+[ ] Line 1074-1078: Author split enforcement marked as "design-ready, enforcement deferred"
+    - now: settlement-enforced (not materializer-enforced). Update description.
+
+
+================================================================================
+SURVIVAL SPRINT — "SURVIVES UNDER DURESS" (pulled into MVP, 2026-02-11)
+================================================================================
+
+MVP redefined: prove market dynamics AND survive the loss of any single jurisdiction.
+No single seizure, block, or arrest kills the system. Content remains retrievable,
+proof of existence remains verifiable, system reconstitutable from portable state.
+
+DocRef: MVP_PLAN:§Trust Assumptions (updated), §Enforcement Audit (survival table)
+
+## Tier 1 — Without these, a single raid kills everything
+
+### A. Tor hidden services (all services)
+
+[ ] .onion for gateway                 compose-production.yml: add tor service, configure hidden service
+[ ] .onion for coordinator             same tor service, separate .onion for coordinator routes
+[ ] .onion for web UI                  Caddyfile: proxy .onion traffic to Next.js
+[ ] Client .onion support              CLI + web: detect .onion endpoints, route via SOCKS5
+[ ] Directory includes .onion          HostServeV1 endpoint field accepts .onion addresses
+
+Effort: low (operational). No protocol changes. Tor binary + torrc config.
+Prerequisite: none. Can deploy immediately.
+
+### B. Second mint (different jurisdiction)
+
+[ ] Mint 2 VPS provisioned             Malaysia (Shinjiru) or Switzerland (COIN.HOST)
+[ ] Mint 2 deployed                    compose with mint service only, separate Ed25519 keypair
+[ ] Mint 2 pubkey in MINT_PUBKEYS      coordinator + gateway .env updated with 2-mint set
+[ ] Mint 2 tested                      L402 flow works with either mint signing
+
+Effort: low (deploy). Code already supports multi-mint (receipt verification checks pubkey set).
+Prerequisite: VPS access + key generation.
+
+### C. State snapshot + bootstrap (Sprint 7d.1 — pulled forward)
+
+[ ] StateSnapshotV1 schema             physics: epoch, merkle roots (pools/hosts/events/serves), event_count, prev_hash
+[ ] Merkle tree library                physics: build from sorted key-value pairs, generate/verify inclusion proofs
+[ ] Snapshot generator                 coordinator: materialize Prisma state → StateSnapshotV1
+[ ] GET /snapshot/latest               coordinator: returns latest snapshot
+[ ] GET /snapshot/:epoch               coordinator: returns snapshot at epoch
+[ ] GET /bootstrap                     coordinator: latest snapshot + events since → new node syncs in seconds
+[ ] Snapshot verification              publisher sig (MVP). Bitcoin-anchored verification (with L7).
+[ ] Snapshot export to file            CLI: `dupenet snapshot export` → portable file (USB-carryable)
+[ ] Snapshot import + boot             CLI: `dupenet snapshot import <file>` → new coordinator boots from file
+
+Effort: medium (code). Core survival primitive — enables airgapped reconstitution.
+Prerequisite: none. Pure physics + coordinator work.
+
+### D. Bitcoin anchoring (L7)
+
+[ ] Daily Bitcoin tx                   Taproot tweak: SHA256(epoch_summary_merkle_root || state_snapshot_hash)
+[ ] Anchor construction                physics: buildAnchorCommitment(epoch_root, snapshot_hash)
+[ ] Anchor broadcast                   coordinator: create + broadcast Bitcoin tx via LND or external
+[ ] Anchor verification                physics: verifyAnchor(tx, epoch_root, snapshot_hash) — check Taproot tweak
+[ ] GET /anchor/latest                 coordinator: returns latest anchor tx + epoch
+[ ] GET /anchor/:epoch                 coordinator: returns anchor for specific epoch
+[ ] Verify page: /verify/<ref>         web: paste CID → inclusion proof path → Bitcoin tx link
+
+Effort: medium (code + ops). Proves history even if all servers destroyed.
+Prerequisite: State snapshots (C) for snapshot_hash. LND for tx broadcast.
+
+### E. Client peer cache
+
+[ ] peers.json rolling cache           CLI: ~/.dupenet/peers.json updated on every successful host interaction
+[ ] Peer discovery from directory      CLI: on GET /directory, cache all host endpoints
+[ ] Peer fallback on directory fail    CLI: if coordinator unreachable, load from peers.json
+[ ] Peer sharing                       CLI: `dupenet peers export` / `dupenet peers import`
+[ ] Web peer cache                     localStorage: cache host endpoints, use on coordinator failure
+
+Effort: low (code). Essential for surviving directory blocking.
+Prerequisite: none.
+
+## Tier 2 — Without these, survival is fragile
+
+### F. Second coordinator (different jurisdiction)
+
+[ ] Second VPS provisioned             different country than primary (e.g. Switzerland if primary is Romania)
+[ ] Coordinator deployed               compose-founder.yml on second VPS, shared Postgres (read replica or sync)
+[ ] Event log replication              append-only log sync between coordinators (pull-based: GET /events?since=)
+[ ] Client multi-coordinator           CLI + web: query both coordinators, merge results
+[ ] Coordinator health failover        client: if primary coordinator fails health check, use secondary
+
+Effort: medium (ops + code). Directory survives seizure of either jurisdiction.
+Prerequisite: event log replication mechanism.
+
+### G. Gateway read-only mode (coordinator-independent serving)
+
+[ ] Gateway serves blocks without mint  if mint unreachable: serve blocks with PoW gate only (no L402, no receipts)
+[ ] Gateway cached directory            gateway: cache last-known host list from coordinator, serve from cache
+[ ] Read-only health endpoint           GET /health reports degraded mode when coordinator unreachable
+[ ] Automatic fallback                  gateway: try mint → timeout → fall back to PoW-only mode
+
+Effort: low (code). Content served even during coordinator outage.
+Prerequisite: PoW-gated free tier (#18) for the fallback gate.
+
+### H. CDN fronting
+
+[ ] Cloudflare in front of web UI      DNS proxied through Cloudflare, DPI sees cloudflare.com
+[ ] CDN for gateway                    optional: CDN for at least one gateway endpoint
+[ ] Fallback domains                   second domain (different registrar/TLD) → same or different IP
+[ ] Domain fronting documentation      operational runbook: how to add new domains, rotate CDN
+
+Effort: low (ops). DPI resistance.
+Prerequisite: none. Can deploy immediately.
+
+## Implementation Order
+
+Phase 1 (immediate, parallel):
+    A. Tor hidden services — deploy now, no code changes
+    B. Second mint — deploy now, add pubkey to config
+    E. Client peer cache — small code change, high impact
+    H. CDN fronting — Cloudflare config, no code changes
+
+Phase 2 (next sprint):
+    C. State snapshot + bootstrap — core code work (physics + coordinator)
+    G. Gateway read-only mode — small code change, depends on PoW tier decision
+
+Phase 3 (after snapshots exist):
+    D. Bitcoin anchoring — depends on snapshots for snapshot_hash
+    F. Second coordinator — depends on event log replication mechanism
+
+Exit criteria: "Survives under duress" means ALL of the following are true:
+    - Content retrievable via Tor when clearnet is blocked
+    - Receipt system operational when one mint jurisdiction is seized
+    - New node bootstrappable from exported snapshot without any live coordinator
+    - Content existence provable via Bitcoin tx even if all servers destroyed
+    - Clients discover hosts from cache when directory is blocked
+    - At least one gateway serves content when coordinator is down
+
+
 LEGEND: [x] done  [~] partial/stub  [ ] not started

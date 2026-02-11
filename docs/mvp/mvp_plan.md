@@ -17,13 +17,41 @@
 7. **Protocol surface area is the enemy** - Proof-of-service (receipts + byte correctness + pool drains) is sacred. Everything else — threading, ranking, author payouts, moderation, discovery, pin semantics — is a materializer view, changeable without a fork.
 8. **The importance index is the product** - The real-time, economically-weighted ranking of what humanity values enough to pay to preserve is a novel signal no other system produces. The protocol is the plumbing; the importance index (content ranked by economic commitment) is the product. The materializer that computes and serves this index is the primary value-creation engine.
 9. **Availability has a clearing price** - The founder operates the clearinghouse matching preservation demand (funders buying replicas × time) to host supply (committed capacity). Pools are the settlement layer; preserve orders are the product layer. The clearing spread is the highest-margin toll — it doesn't taper, compounds with volume, and is naturally monopolistic (liquidity begets liquidity). Every L402 fetch auto-generates a micro-preservation-bid, making consumption mechanically fund availability at the protocol level.
+10. **Durability and access are separate products** - Pools fund proof-of-holding (time-based drain via spot-checks). Egress is funded separately: L402 (paid), PoW (free-as-in-CPU), or funder-sponsored access budget. A pin that funds 1 year of replication cannot be drained early by viral free readers. Hosts are stores, not libraries — every byte served has a cost borne by someone (reader, funder, or reader's CPU).
 
 ### Trust Assumptions (MVP)
 
-- Founder operates default directory, aggregator, receipt mints, provisioning, materializer
+- Founder operates default directory, aggregator, receipt mints, provisioning, materializer, settler, upload escrow, clearinghouse
 - Receipts accepted from founder mints only
-- Architecture permits replacement at every layer; MVP does not exercise that
-- Goal is to prove market dynamics, not decentralization
+- Architecture permits replacement at every layer; MVP exercises geographic redundancy
+- **Goal is to prove market dynamics AND survive the loss of any single jurisdiction.** No single seizure, block, or arrest kills the system. Content remains retrievable, proof of existence remains verifiable, and the system can be reconstituted from portable state by strangers.
+
+### Enforcement Audit (What's Actually Tight)
+
+**Cryptographic (can't cheat without breaking math):** Content integrity (SHA256 == CID), receipt tokens (Ed25519 mint sig), event signatures, block selection (PRF — host can't predict), PoW on receipts.
+
+**Economic (cheating costs more than compliance):** L402 paid fetch (real Lightning sats), PoW escalation (receipt farming gets exponential), wash trading (costs real sats = demand subsidy at cost), audit incentives (30% reward on proven fraud).
+
+**Founder-trust (honest founder required):** Epoch settlement, pool accounting, mint operation, directory, upload escrow, author revshare verification, spot-checks, preserve clearing, auto-bid computation. All deterministic and auditable from the receipt log — anyone can recompute. But at MVP, nobody does. Competing settlers (post-MVP L5) eliminate the single-executor trust point.
+
+**Deferred (described, not enforced at launch):** Stake verification (receipt + spot-check gates sufficient), PoW-gated free tier (#18), session/tab model (#17), access_sats budget tracking, demand-scaling PoW difficulty, review window auto-refund, staging auto-purge, dynamic base fee (EIP-1559).
+
+**Load-bearing defenses at MVP:** Receipt system (can't earn without serving real bytes to real clients) + spot-checks (non-serving hosts delisted) + founder oversight (manual vetting at 5-20 host scale). These three compose to make Sybil registration, fake demand, and non-serving hosts unprofitable — without requiring stake.
+
+**Survival under duress (MVP requirements):** The system must survive the loss of any single jurisdiction. Minimum viable censorship resistance:
+
+| Requirement | Mechanism | What it survives |
+|---|---|---|
+| Tor hidden services | `.onion` for gateway, coordinator, web UI | IP/domain blocking |
+| Multi-jurisdiction mints | ≥2 mints in different countries | Single-country seizure kills receipts |
+| State snapshot + bootstrap | Portable snapshot → airgapped reconstitution | Total infrastructure loss |
+| Bitcoin anchoring (L7) | Daily tx: epoch root + snapshot hash | Evidence survives destruction |
+| Client peer cache | `peers.json` updated on every host interaction | Directory blocking |
+| Second coordinator | Different VPS, different country, same event log | Directory seizure |
+| Gateway read-only mode | Serve blocks from disk when coordinator unreachable | Coordinator seizure |
+| CDN fronting | Cloudflare/CDN in front of web + gateway | Deep packet inspection |
+
+Protocol property that enables all of the above: **content is addressed by hash, not location.** CIDs are portable. A seizure doesn't change the CID — the content reappears on any other host and is provably the same document. Money flows borderlessly via Lightning. Hosts anywhere in the world mirror content because pools are profitable. The adversary must suppress every copy, not one source.
 
 ### Platform Layers
 
@@ -77,6 +105,7 @@ Everything in the system is one of four operations: `PUT blob`, `POST event`, `S
 - Pool rule: `if event.sats > 0: credit pool[event.ref] += (sats - royalty)`
 - Founder royalty on pool credits: volume-tapering formula (see §Founder Royalty)
 - Epoch settlement: drain pools to receipt-holders serving bytes referenced by pool key
+- Author revshare enforcement: conditional epoch reward — hosts prove author payment to claim (see §Author Revenue Share)
 - Service fees (settlement, materialization, minting): market-determined, no hardcoded rates
 
 **Materializer (iterable, change weekly)**:
@@ -85,7 +114,7 @@ Everything in the system is one of four operations: `PUT blob`, `POST event`, `S
 - Reference graph: extract body edges (`[ref:bytes32]` inline mentions), build weighted citation DAG across all content
 - Graph-weighted importance: economically-weighted PageRank over the reference graph (display signal, not fund transfer)
 - Ranking formulas / signal aggregation / scorecards / supply curves
-- Author profiles / reputation / creator bonuses (funded from materializer fees, not protocol)
+- Author profiles / reputation / creator bonuses (reputation is materializer-level; revshare enforcement is settlement-level — see §Author Revenue Share)
 - Pin lifecycle (kind=PIN_POLICY event → materializer enforces drain caps + SLA + alerts)
 - Moderation / content filtering / attester follow lists
 - Discovery feeds / search / collection fan-out / cluster views (graph-neighborhood browsing)
@@ -93,9 +122,26 @@ Everything in the system is one of four operations: `PUT blob`, `POST event`, `S
 - Thread bundles: snapshot thread state as a single content-addressed object (ThreadBundleV1), fundable/pinnable as one CID
 - UI skins (upvote / tip / fortify / pin are all `event.sats > 0` with different amounts)
 
-**Author earnings model**: Protocol pays only servers (receipt-holders). Authors earn by (a) self-hosting (earn as any host), (b) revenue share on third-party payments (materializer-enforced), or (c) social capital (reputation → paid inbox, commissions, trust premium). No AUTHOR_SHARE in settlement — that's a permanent bet.
+**Author earnings model**: Protocol pays servers (receipt-holders). Authors earn by (a) self-hosting (earn as any host), (b) settlement-enforced revenue share on third-party payments, or (c) social capital (reputation → paid inbox, commissions, trust premium).
 
-**Author revenue share (materializer convention)**: ANNOUNCE payload includes optional `author_pubkey` + `revshare_bps` (basis points, e.g. 1500 = 15%). When present, the materializer (or host) splits qualifying payments: bounty pool payouts and L402 egress fees forward `revshare_bps` to `author_pubkey`. Only third-party payments qualify — author's own FUND events and self-generated receipts are excluded (prevents farming loops). Default: 0 bps (opt-in). Hosts advertise "author splits supported" in PricingV1. This gives creators a reason to upload and market their links without requiring them to run a host. Read stays open (or paid per host policy); author earns from preservation + consumption by others.
+**Author revenue share (settlement-enforced)**: ANNOUNCE payload includes optional `author_pubkey` + `revshare_bps` (basis points, e.g. 1500 = 15%). Enforcement is at settlement, not materializer discretion:
+
+```
+settlement(host, cid, epoch):
+  announce = ANNOUNCE(cid)
+  if announce.revshare_bps > 0:
+    expected = total_egress(host, cid, epoch) * announce.revshare_bps / 10000
+    if host.author_payment_proof(cid, epoch) >= expected:
+      pay epoch_reward normally
+    else:
+      withhold epoch_reward for this CID (stays in pool)
+```
+
+**Trust-minimization chain**: Receipt binds `asset_root` + `host_pubkey` + `price_sats`. ANNOUNCE binds `asset_root` to `author_pubkey` + `revshare_bps`. Expected author payment is deterministically computable by anyone from the receipt log. The only trust point is execution — the settler verifies proof of author payment (Lightning preimage to author invoice, or author signs `ReceivedV1` attestation). Competing settlers (post-MVP) eliminate even that.
+
+**Incentive alignment**: Hosts that don't honor revshare lose their epoch reward for that CID — typically larger than the revshare they'd pocket. Cheating is unprofitable. Hosts opt in by choosing to serve content with `revshare_bps > 0`, knowing the settlement rule upfront.
+
+Only third-party payments qualify — author's own FUND events and self-generated receipts are excluded (prevents farming loops). Default: 0 bps (opt-in). This gives uploaders a trust-minimized revenue stream without requiring them to run a host: upload → pay quote → set revshare → earn from consumption by others.
 
 **Unified pool action**: Tip, upvote, fortify, preserve, and pin budget credits are mechanically identical at the protocol layer — `credit pool[ref] += sats`. Preserve orders add a clearing step (materializer-level escrow → epoch-boundary matching → pool credit at clearing price). Pins add kind=PIN_POLICY body with drain caps. Raw FUND events credit immediately. The protocol only sees pool credits regardless of entry path.
 
@@ -183,7 +229,7 @@ These are `EventV1.body` schemas the reference materializer interprets. Not prot
 | Kind | Name | ref | body | Notes |
 |------|------|-----|------|-------|
 | 0x01 | FUND | pool_key | empty | Tip/upvote/fortify are all FUND with different amounts |
-| 0x02 | ANNOUNCE | CID | title, description, mime, tags, preview, thumb_cid, access, author_pubkey?, revshare_bps? | Human metadata for content. `access`: `"open"` or `"paid"` (default). `author_pubkey` + `revshare_bps`: optional revenue share (materializer-enforced, third-party payments only — see §Author Revenue Share). Publisher *signal*, not host *constraint*. Materializer convention — see §Dual-Mode Host Economics, §New User Journey. |
+| 0x02 | ANNOUNCE | CID | title, description, mime, tags, preview, thumb_cid, access, author_pubkey?, revshare_bps? | Human metadata for content. `access`: `"open"` or `"paid"` (default). `author_pubkey` + `revshare_bps`: optional revenue share (settlement-enforced, third-party payments only — see §Author Revenue Share). Publisher *signal*, not host *constraint*. See §Dual-Mode Host Economics, §New User Journey. |
 | 0x03 | POST | parent_event_id, CID, or topic_hash | inline text ≤16KiB; may contain `[ref:bytes32]` body edges | Comment on any content (blob or event); threading via ref chains; body edges create citation graph; PoW for free, sats to boost |
 | 0x04 | HOST | CID | endpoint, pricing, regions, stake | Host registration + serve announcement |
 | 0x05 | REFUSAL | CID | reason enum + scope | Operator content filtering |
@@ -191,8 +237,9 @@ These are `EventV1.body` schemas the reference materializer interprets. Not prot
 | 0x07 | LIST | list topic | title, items[{cid, name, mime, size}] | Named collections |
 | 0x08 | PIN_POLICY | pool_key | drain_rate, min_copies, regions, duration | FUND + drain constraints; materializer enforces SLA. Foundation for preserve orders — preserve extends pins with bid aggregation + clearing + cancellability (see §Preserve Orders) |
 | 0x09 | MATERIALIZER | materializer pubkey | endpoint, pricing, coverage | Metadata host discovery |
-| 0x0A | PRESERVE | pool_key | tier, target_replicas, min_jurisdictions, duration_epochs, max_price_per_epoch, auto_renew | Preservation order (demand side). Sats escrowed until epoch-boundary clearing. Extends PIN_POLICY with aggregation + clearing spread. Materializer convention. |
+| 0x0A | PRESERVE | pool_key | tier, target_replicas, min_jurisdictions, duration_epochs, max_price_per_epoch, access_sats, access_pow_fallback, auto_renew | Preservation order (demand side). Sats escrowed until epoch-boundary clearing. `access_sats` funds free reads (separate from durability budget). Extends PIN_POLICY with aggregation + clearing spread. Materializer convention. |
 | 0x0B | OFFER | pool_key | replicas, regions, price_per_epoch, bond_sats, duration_epochs | Host commitment (supply side). Bonded capacity offer matched against PRESERVE orders at clearing. Materializer convention. |
+| 0x0C | UPLOAD_QUOTE | asset_root | cost_sats, review_window_epochs, included_epochs | Signed upload quote. Binding price commitment from host. Client pays to escrow; host reviews content before accepting. |
 
 ### Entity Relationships
 
@@ -245,9 +292,11 @@ Hosts earn from both streams simultaneously. L402-paying consumers generate rece
 | `GET /asset/{asset_root}` | None | `AssetRootV1` | None |
 | `GET /file/{file_root}` | None | `FileManifestV1` | None |
 | `GET /block/{block_cid}` | None | `bytes` | Egress charged (min_request_sats) |
-| `PUT /block/{block_cid}` | `bytes` | `ack` | Block stored (verified) |
-| `PUT /file/{file_root}` | `FileManifestV1` | `ack` | Manifest stored |
-| `PUT /asset/{asset_root}` | `AssetRootV1` | `ack` | Asset registered |
+| `PUT /block/{block_cid}?staging=true` | `bytes` | `ack` | Block stored in staging (verified, not served) |
+| `PUT /file/{file_root}?staging=true` | `FileManifestV1` | `ack` | Manifest staged |
+| `PUT /asset/{asset_root}?staging=true` | `AssetRootV1` | `UploadQuoteV1` | Asset staged; host returns signed quote |
+| `POST /upload/{asset_root}/accept` | None | `HostServe` | Host accepts; escrow released; content goes live |
+| `POST /upload/{asset_root}/pass` | `reason?` | `REFUSAL` | Host passes; staging purged; escrow refunded minus REVIEW_FEE |
 | `GET /pricing` | None | `PricingV1` | None |
 | `GET /served` | None | `[cid]` | None |
 
@@ -274,20 +323,38 @@ User → User messaging (paid inbox) is Layer B. See `post_mvp.md`.
 
 Manifests and asset roots MUST be canonical-serialized (stable field order, no floats, deterministic encoding) before hashing to produce file_root / asset_root_cid.
 
-### Upload / Ingestion
+### Upload / Ingestion (Quote-Review Model)
 
-Client-side chunking. Client computes all CIDs locally, pushes to host(s):
+Hosts are curated storefronts, not dumb blob buckets. Uploaders pay for placement; hosts review before committing to serve. This gives operators legal cover, filters content before it goes live, and ensures every byte served was explicitly accepted.
 
 ```
-1. Chunk file → CHUNK_SIZE_DEFAULT blocks
-2. block_cid = SHA256(block_bytes) per block
-3. Build FileManifestV1 → file_root = SHA256(canonical(manifest))
-4. Generate variants (images: client-side resize; video: paid transcoding service)
-5. Build AssetRootV1 → asset_root = SHA256(canonical(asset_root))
-6. Push: PUT /block/{cid}, PUT /file/{root}, PUT /asset/{root}
+1. Client chunks locally:
+   Chunk file → CHUNK_SIZE_DEFAULT blocks
+   block_cid = SHA256(block_bytes) per block
+   Build FileManifestV1 → file_root = SHA256(canonical(manifest))
+   Generate variants (images: client-side resize; video: paid transcoding service)
+   Build AssetRootV1 → asset_root = SHA256(canonical(asset_root))
+
+2. Client pushes to host STAGING:
+   PUT /block/{cid}?staging=true, PUT /file/{root}?staging=true, PUT /asset/{root}?staging=true
+   Host verifies block hashes, stores in staging (not served, not announced)
+
+3. Host returns signed quote:
+   UploadQuoteV1 { asset_root, cost_sats, review_window_epochs, host_pubkey, sig }
+   Quote is binding — host cannot change price after seeing content
+
+4. Client pays quote:
+   Sats escrowed at materializer (MVP). HTLC conditioned on HostServe publication (post-MVP).
+
+5. Host operator reviews within review_window_epochs (default 6 = 24h):
+   ACCEPT → host publishes HostServe, escrow released, content goes live
+   PASS   → host publishes REFUSAL, staging purged, escrow refunded minus REVIEW_FEE
+   TIMEOUT → review_window expires, escrow auto-refunds in full, staging purged
 ```
 
-Host verifies block hashes on receive. All blocks present before manifest accepted.
+**Uploader can submit to multiple hosts simultaneously.** Each quote is independent. First to accept serves; others can accept too (more replicas). Uploaders self-filter because PASS costs them `REVIEW_FEE`. Hosts self-filter because reviewing garbage costs time with no pay.
+
+**Quote includes initial hosting period**: `cost_sats` covers acceptance + `included_epochs` of hosting. After that, content survives via pool economics (bounty, preserve, or uploader tops up). The quote is the first funding event — upload cost and seed funding combined.
 
 ### Variant Policy
 
@@ -453,13 +520,14 @@ Layer B adds harmonic vine allocation across content hierarchies (see `post_mvp.
 
 ### Release
 
-Hosts claim by proving they serve the content (per epoch):
+Hosts claim by proving they *hold* the content (per epoch). Pool drain is time-based, not demand-proportional:
 
 1. Host registers: `HostServeV1 { host_pubkey, cid, endpoint, stake }`
-2. Clients fetch via L402, optionally mint PoW receipts
-3. If receipt_count ≥ 1 AND total_proven_sats > 0: host earns `epoch_reward` (smooth scaling — see §Epoch-Based Rewards)
-4. Ongoing: host earns egress fees per request (host-configured pricing)
-5. Auto-bids from traffic feed back into pool, sustaining the cycle
+2. Host passes spot-checks (proof-of-holding) and/or accumulates L402 receipts (proof-of-serving)
+3. If spot_check_pass OR (receipt_count ≥ 1 AND total_proven_sats > 0): host earns `epoch_reward` (smooth scaling — see §Epoch-Based Rewards)
+4. Ongoing: host earns egress fees per request (host-configured pricing, separate from pool drain)
+5. Auto-bids from L402 traffic feed back into pool, sustaining the cycle
+6. PoW-gated free reads: host serves bytes, no receipt generated, no pool effect
 
 ### Equilibrium
 
@@ -487,11 +555,15 @@ PreserveOrderV1 {
   min_jurisdictions: u8                    // Gold=3, Silver=2, Bronze=1
   duration_epochs: u32                     // Gold=1080(6mo), Silver=540(3mo), Bronze=180(1mo)
   max_price_per_epoch: u64                 // funder's ceiling
+  access_sats: u64                         // optional free-access budget (separate from durability)
+  access_pow_fallback: bool                // when access_sats exhausted, allow PoW-gated reads (default: true)
   auto_renew: bool
   funder: pubkey
   sig: signature
 }
 ```
+
+**Durability vs access budgets**: `max_price_per_epoch × duration_epochs` funds replication (proof-of-holding, spot-checks). `access_sats` funds free reads (consumed per-fetch, independent of durability drain). When `access_sats` exhausts, content remains durable and available via L402 or PoW (if `access_pow_fallback`). A funder who wants "this document free for 1 year" sets a high `access_sats`; a funder who wants "keep 5 copies forever, readers pay" sets `access_sats: 0`.
 
 **Bid aggregation**: multiple funders' preserve orders on the same CID combine into aggregate demand. "93 backers requesting avg 6.2 replicas at median 40 sats/epoch." Hosts see real demand curves, not opaque pool balances.
 
@@ -519,7 +591,9 @@ For each CID: `sustainability_ratio = organic_auto_bid_income / preservation_cos
 
 **Principle**: Slash only for cryptographic fraud. Never slash for availability (DDoS → slash = attack vector). Availability failures use earning decay — host loses income, not capital.
 
-**Operator MUST**: stake 2,100 sats, serve correct bytes (`hash(response) == cid`), unbond cleanly (7-day wait).
+**Operator MUST**: serve correct bytes (`hash(response) == cid`), unbond cleanly (7-day wait).
+
+**Stake verification (deferred until 50+ hosts)**: OPERATOR_STAKE (2,100 sats) is specified but not enforced at MVP. The receipt + spot-check system is the real Sybil gate: hosts can't earn epoch rewards without real receipts (which require serving real bytes to real L402-paying clients), and non-responding hosts are delisted via spot-check score decay (score=0 for 6 epochs → INACTIVE). At MVP scale (5-20 hosts, founder knows each), stake verification adds implementation cost without defending against a realistic threat. Stake becomes necessary when the founder can't personally vet hosts (~50+ hosts) and directory pollution degrades client UX.
 **Operator MAY**: choose CIDs, set own pricing, leave anytime, serve from anywhere (public or archive mode), register multiple endpoints.
 
 | Offense/Condition | Effect | Proof/Recovery |
@@ -534,7 +608,7 @@ For each CID: `sustainability_ratio = organic_auto_bid_income / preservation_cos
 
 **Availability score**: `successful_checks / total_checks` (rolling 6 epochs / 24h). TRUSTED ≥ 0.6.
 
-**Staking (MVP)**: Custodial via LN payment to coordinator. Post-MVP: on-chain UTXO / federation / DLC escrow.
+**Staking (deferred)**: Not enforced at MVP. Receipt + spot-check gates are sufficient at founder-vetted scale. When implemented: custodial via LN payment to coordinator. Post-MVP: on-chain UTXO / federation / DLC escrow.
 
 **Modes**: Public Gateway (full earnings) | Archive Only (epoch reward only, behind NAT).
 
@@ -562,31 +636,49 @@ Hosts set their own prices via `PricingV1`: `min_request_sats` (anti-grief floor
 
 **Defaults**: min_request 3 sats | normal 500 sats/GB (~$0.05/GB) | burst 2000 sats/GB. Charge = `max(min_request_sats, ceil(rate × gb))`.
 
-**Free preview tier**: Thumbnails/excerpts ≤16 KiB served without L402 (host opts in). Rate-limited per-IP (60 burst / 10 sustained). Free previews are loss leaders that drive paid fetches.
+### Layered Access Gating
+
+Hosts are stores, not libraries. Every byte served has a cost. Three tiers gate access; each tier has a different payment mechanism:
+
+| Tier | Gate | Content served | Host cost model |
+|------|------|---------------|-----------------|
+| **Default menu** | None (metadata only) | Titles, descriptions, thumbnails (≤16 KiB per item) | Negligible; host absorbs as storefront |
+| **Preview** | PoW (~200ms, `FREE_POW_TARGET`) | Excerpts, first page, text summaries | Small; host absorbs or funder sponsors |
+| **Full access** | L402 / funder-sponsored budget / high PoW | Complete content, streaming, download | Fully compensated |
+
+**Default menu**: The storefront window. Materializer serves content listings (titles, thumbnails, prices) without L402 or PoW. Capped at `FREE_PREVIEW_MAX_BYTES` per item. This is what a new visitor sees before paying anything.
+
+**PoW-gated free tier**: Replaces IP-based rate limiting. Client presents a valid PoW solution with the fetch request; host verifies before serving. No L402, no sats — reader pays with CPU. PoW difficulty auto-scales with concurrent demand per CID (`FREE_POW_TARGET >> floor(log2(active_readers))`). A 10-page whistleblower PDF (~5 blocks): ~1 second of compute. A 2-hour video (~4,000 blocks): ~13 minutes of CPU — naturally discourages freeloading on expensive content while remaining accessible to determined readers. Bot flooding requires sustained SHA256 grinding proportional to bytes consumed.
+
+**PoW-gated free reads do not generate receipts and do not drain any pool.** They produce a lightweight demand marker (host-logged, not receipt-grade) that the materializer MAY use for ranking signals, but that triggers zero economic drain. This is the key separation: durability pools fund proof-of-holding; PoW reads fund nothing — the host serves them as marketing cost or declines when overloaded (429 + `Retry-After`).
+
+**Funder-sponsored access budget**: When creating a preserve order, the funder can allocate an explicit `access_sats` budget for free reads, separate from the durability budget. Free readers consume from `access_sats`. When exhausted, content falls back to PoW or L402. The durability budget (replication + spot-check proofs) is unaffected. See §Preserve Orders.
 
 ### Dual-Mode Host Economics
 
-The `access` field on ANNOUNCE events is publisher *intent*, not host *constraint*. Publisher says "I'd like this free" — hosts MAY honor it if the pool meets their threshold. Or not. The protocol doesn't care. Hosts are sovereign — they set their own `PricingV1` and there is no enforcement mechanism. A host with "open" content can charge L402 anyway. Rather than pretending otherwise, the plan formalizes both earning streams as always-available.
+The `access` field on ANNOUNCE events is publisher *intent*, not host *constraint*. Publisher says "I'd like this free" — hosts MAY honor it if the pool meets their threshold. Or not. The protocol doesn't care. Hosts are sovereign — they set their own `PricingV1` and there is no enforcement mechanism. Rather than pretending otherwise, the plan formalizes both earning streams as always-available.
 
 **Two earning streams, always both available:**
 
-- **Bounty stream** — epoch rewards from pool drain. Hosts earn by proving service (receipts + spot-checks). Funded by Fortify. Pool drains to receipt-holders per `cidEpochCap()`.
+- **Durability stream** — epoch rewards from pool drain. Hosts earn by proving they *hold* content (spot-checks). Pool drains time-based per `cidEpochCap()`, proportional to proven holding, not to fetches served. Funded by Fortify / preserve orders.
 - **Vending stream** — L402 egress fees. Hosts earn per-fetch from consumers. Self-priced via `PricingV1`.
-- A host serving a given CID can earn from BOTH simultaneously. A bounty-funded open-access fetch still generates a receipt that counts toward epoch settlement. Whether the consumer paid L402 (vending) or consumed open-access (bounty-funded), the host produces a receipt. Settlement doesn't distinguish. This means open-access fetches ARE demand signals — they generate receipts that attract more hosts.
+- A host serving a given CID earns from BOTH simultaneously. Durability income is independent of fetch volume — a rarely-read but well-funded document earns the same as a popular one at the same pool level. Vending income scales with demand.
 
-**Open access tier (sponsored availability)**: Content served without L402 for CIDs where the pool meets the host's threshold. Used for seed content / public-interest material where the value prop is durability + context, not exclusive access. Open access is not free forever — it is bounty-funded serving with host thresholds. `access: "open"` on ANNOUNCE is a materializer convention (see §New User Journey) that signals publisher preference.
+**Open access (sponsored availability)**: Content served without L402 when the funder's `access_sats` budget covers it, OR when PoW is accepted. `access: "open"` on ANNOUNCE signals publisher preference (materializer convention). Hosts serve open content only if the access budget or pool justifies bandwidth cost. Below threshold, host declines or falls back to L402. Content drops from free to paid when funding dries up. No charity, no free CDN — sponsored or PoW-gated availability.
 
-Host economics: on open-access fetches, hosts earn from the bounty stream (epoch rewards from pool drain). Hosts ALSO produce receipts on open-access fetches — identical to paid fetches — which count toward epoch settlement eligibility. This means a host serving popular open content accumulates receipts that prove demand, attracting the same epoch rewards as paid-fetch receipts. Hosts serve open content only if `pool >= host.open_min_pool_sats` (host-configured). Below threshold, host declines or falls back to L402. This creates a natural floor: content drops from open to paid when funding dries up. No charity, no free CDN — sponsored availability.
+**Host self-upload (vending-first):** A host uploads content to itself (skips quote-review — operator IS the reviewer), announces with `access: "paid"`, sets pricing via `PricingV1`. No bounty pool needed — they earn from direct L402 sales (vending stream). If others Fortify the content later, the host earns durability rewards too. **Third-party upload (quote-review):** An external uploader pushes content to staging, receives a quote, pays, and waits for host review (see §Upload / Ingestion). Uploader sets `revshare_bps` in ANNOUNCE; host earns epoch rewards only if they prove author payment (see §Author Revenue Share). Both paths compose: upload → content live → earn per fetch.
 
-**Host self-upload (vending-first):** A host uploads content to itself, announces with `access: "paid"`, sets pricing via `PricingV1`. No bounty pool needed — they earn from direct L402 sales (vending stream). If others Fortify the content later, the host earns bounty rewards too. The two flywheels compose without conflict. This is the creator/seller flow: upload → share link → earn per fetch. Discovery is external (social media, direct links). The protocol is the settlement layer.
+**Receipt economics by access tier:**
 
-Size constraint: for large files (video, archives), open access serves derived variants only (thumbnails, excerpts, per-page PDF renders, text extracts). Full raw file stays L402-gated unless pool is large enough to justify the bandwidth. For small/medium documents (court filings, text), open access serves the full file. The threshold is host-decided via `open_min_pool_sats` — a host serving video has higher costs and sets a higher threshold.
+| Access tier | Receipt generated? | Pool drain? | Auto-bid? | Demand signal? |
+|-------------|-------------------|-------------|-----------|----------------|
+| L402 (paid) | Yes (full ReceiptV2) | No (pool drains time-based) | Yes (`AUTO_BID_PCT`) | Full economic signal |
+| Funder-sponsored | Yes (receipt_token from access budget) | Access budget only (durability untouched) | No | Moderate signal |
+| PoW (free-as-in-CPU) | No | No | No | Lightweight marker only |
 
-**Receipt economics are identical across streams.** Whether the consumer paid L402 or consumed open-access content, the host produces a receipt. Settlement doesn't distinguish. The pool drains to receipt-holders regardless of how the consumer accessed the content. This means open-access fetches drive the same host economics as paid fetches: more reads → more receipts → more hosts mirror → faster downloads → more reads.
+**Auto-bids from traffic**: Every L402 paid fetch generates `auto_bid = price_sats * AUTO_BID_PCT` credited to `pool[fetched_cid]` at settlement. PoW-gated free reads do NOT generate auto-bids (no sats involved). This means only economically committed consumption (L402) feeds the sustainability loop: paid consumption → auto-bid → pool growth → more hosts → better serving → more consumption. Content becomes self-sustaining when auto-bid income exceeds preservation cost at current replica level (see §Sustainability Ratio). Auto-bid pool credits are subject to the standard pool credit royalty.
 
-**Auto-bids from traffic**: Every L402 paid fetch generates `auto_bid = price_sats * AUTO_BID_PCT` credited to `pool[fetched_cid]` at settlement. Open-access fetches generate equivalent auto-bids funded from epoch drain surplus. This closes the loop: consumption → auto-bid → pool growth → more hosts → better serving → more consumption. Content becomes self-sustaining when auto-bid income exceeds preservation cost at current replica level (see §Sustainability Ratio). Auto-bid pool credits are subject to the standard pool credit royalty — founder earns on every fetch twice (egress royalty + royalty on auto-bid credit).
-
-UI: open-access content pages show "Free to read, pay to preserve." Paid content pages show price tag + Buy button (cheapest host). Rate-limited per-IP same as free preview. The conversion event for open content is Fortify, not L402. For paid content, both L402 (buy) and Fortify (fund durability) are visible.
+UI: PoW-gated content pages show "Free to read (PoW), pay to preserve." Paid content pages show price tag + Buy button (cheapest host). Funder-sponsored content shows "Free (sponsored by N funders, X sats remaining)." The conversion event for free content is Fortify, not L402.
 
 **Client behavior**: query cheapest host meeting minimum resilience score, show estimated cost, failover on timeout. Creates competition without governance.
 
@@ -604,7 +696,9 @@ EPOCH_LENGTH = 4h
 
 Shorter epochs = faster host payouts, better cash flow for small operators. 6 payout cycles/day.
 
-Host earns for a CID in an epoch proportional to proven demand (paid L402 or open-access — settlement doesn't distinguish):
+**Dual proof model**: Hosts prove both *holding* (spot-checks — durability) and *serving* (receipts from L402/sponsored fetches — demand signal). Pool drain is time-based per `cidEpochCap()` regardless of fetch volume. Receipts determine the *split* among eligible hosts (who gets what share of the cap), not the drain *rate*. More fetches = larger share of a fixed cap, not faster drain. PoW-gated free reads produce no receipts and have zero effect on settlement.
+
+Host earns for a CID in an epoch proportional to proven service (L402 receipts + spot-check passes):
 
 ```
 PAYOUT_ELIGIBLE(host, cid, epoch) if:
@@ -775,6 +869,27 @@ Host can't predict which block client will request. Must store all blocks.
 ```
 
 Normal browsing stays smooth. Receipt minting is opt-in. The receipt_token makes each receipt permissionlessly verifiable without LN state access. Small text blobs still served via `GET /cid/{hash}`.
+
+### Session / Tab Model (Streaming + Batched Payment)
+
+Per-block L402 invoicing is unusable for streaming media (a 1 GB video = ~4,000 blocks = ~4,000 Lightning round-trips). The session model batches payment into a "bar tab":
+
+```
+1. Client opens session: POST /session {cid, budget_sats, pubkey}
+2. Host returns: {session_id, blocks_covered, expires_at}
+3. Client fetches blocks: GET /block/{cid}?session={session_id} (no L402 per block)
+4. Host serves bytes, decrements session balance
+5. When balance low: client tops up (POST /session/{id}/topup {sats})
+6. Session closes: host mints receipts in batch (one per block served)
+```
+
+The session is host-level state, not protocol. Receipts are still per-block (for epoch settlement). Only the *payment* is batched. Session tokens are bearer credentials — revocable, expiring, host-scoped. No protocol change required.
+
+**Seek-aware playback**: `FileManifestV1` blocks are sequential byte ranges. For media files (MP4, WebM), the first block(s) contain the container header (`moov` atom, etc.). Client reads the header, computes time-offset-to-block-index mapping locally. AssetRoot `variants[]` supports multiple bitrates. Adaptive bitrate switching is a client-side decision — fetch blocks from a different variant mid-session. The host doesn't care which variant or block order the client requests.
+
+**QoS under load**: When a host is at bandwidth capacity, it returns `429 Too Many Requests` + `Retry-After`. Client failovers to another host (directory has multiple hosts per CID). Hosts MAY implement priority queuing by session `budget_sats` — higher-paying sessions get priority. This is host policy (`PricingV1`), not protocol.
+
+**PoW sessions (free streaming)**: Same session flow, but opened with PoW instead of L402. Client presents PoW per session (not per block), covering N blocks. PoW difficulty scales with session size — a 10-block document session is ~2 seconds; a 4,000-block video session is substantial compute. Free streaming sessions do not generate receipts and do not drain any pool.
 
 ### Host Self-Farming
 
@@ -1878,7 +1993,7 @@ Current design: client fetches all blocks from one host, failover to next on fai
 | FOUNDER_ROYALTY_ALPHA | log(2)/log(9) ≈ 0.3155 | Power-law decay exponent |
 | EGRESS_ROYALTY_PCT | 0.01 (1%) | Flat % of L402 egress fees to founder pubkey. Durable passive income floor. Does not taper. |
 | PROVISIONING_SURCHARGE | 21% | Managed node provisioning margin (product-level) |
-| OPERATOR_STAKE | 2,100 sats | Sybil resistance, accessible |
+| OPERATOR_STAKE | 2,100 sats | Sybil resistance, accessible. Deferred — not enforced at MVP (receipt + spot-check gates sufficient at founder-vetted scale). |
 | RECEIPT_MIN_COUNT | 1 | Min receipts for payout eligibility (smooth scaling replaces hard 5/3 gate) |
 | RECEIPT_MIN_UNIQUE | — | Removed as hard gate. Client diversity is now a smooth log2 bonus multiplier on payout_weight, not a binary threshold. |
 | POW_TARGET_BASE | 2^240 | ~200ms on mobile |
@@ -1908,6 +2023,16 @@ Current design: client fetches all blocks from one host, failover to next on fai
 | MAX_LIST_ITEMS | 1,000 | Cap items per kind=LIST event (prevents unbounded payloads) |
 | MIN_BOUNTY_SATS_DEFAULT | 50 | Default host profitability threshold for min_bounty_sats |
 | OPEN_MIN_POOL_SATS_DEFAULT | 500 | Default host threshold for open-access serving; below this pool balance, host falls back to L402 |
+| FREE_POW_TARGET | 2^240 | Base PoW target for free-tier reads. Scales with demand: `FREE_POW_TARGET >> floor(log2(active_readers))`. ~200ms per block at base. |
+| SESSION_MIN_DEPOSIT_SATS | 21 sats | Minimum deposit to open a paid session (bar tab). Covers ~7 blocks at default pricing. |
+| SESSION_MAX_BLOCKS | 4,096 | Max blocks per session (~1 GB at 256 KiB). Client must open new session for larger files. |
+| SESSION_TTL | 1h | Session expires after 1 hour of inactivity. Unspent balance refundable minus SESSION_CLOSE_FEE. |
+| SESSION_CLOSE_FEE | 1% | Fee on unspent session balance at close (host revenue for session state overhead). |
+| ACCESS_BUDGET_MIN | 100 sats | Minimum access_sats on preserve orders (covers ~33 free reads at default pricing). |
+| REVIEW_FEE | 21 sats | Deducted from escrow on PASS (compensates host for review labor). |
+| REVIEW_WINDOW_EPOCHS | 6 (24h) | Host must accept/pass within this window or escrow auto-refunds. |
+| STAGING_TTL_EPOCHS | 12 (48h) | Unpaid staged content auto-purged after this. |
+| UPLOAD_MIN_QUOTE | 50 sats | Minimum quote a host can issue (anti-grief on review pipeline). |
 | SNAPSHOT_INTERVAL_EPOCHS | 100 | State snapshot every 100 epochs (~17 days) |
 | ANCHOR_INTERVAL_EPOCHS | 6 | Epoch root anchored to Bitcoin every 6 epochs (~1/day) |
 | AUTO_BID_PCT | 0.02 (2%) | % of L402 egress price auto-credited to pool[fetched_cid] per receipt. Founder earns pool credit royalty on these. Tunable per-epoch. |
@@ -1928,6 +2053,8 @@ Current design: client fetches all blocks from one host, failover to next on fai
 - Importance triangle labels: percentile-based (Underpriced / Flash / Endowed — see §Signal Layer)
 - Auto-bid per receipt: `price_sats * AUTO_BID_PCT` — credited to pool[cid] at settlement
 - Sustainability ratio: `organic_auto_bid_income / preservation_cost` — ≥1.0 = self-sustaining
+- Free-tier PoW difficulty: `FREE_POW_TARGET >> floor(log2(active_readers + 1))` — scales with concurrent demand per CID
+- Session blocks_covered: `floor(budget_sats / min_request_sats)` — how many blocks a session deposit buys
 - Clearing price: epoch-boundary matching of aggregate preserve demand vs host supply per CID
 
 Layer A.1 constants are tunable at the same granularity as Layer A (epoch boundaries or local). Layer B constants (vine allocation, discovery, inbox) are in `post_mvp.md`.
@@ -2039,6 +2166,10 @@ Deferred design decisions from external review. Each has a trigger condition —
 | 14 | Attester weaponization (coordinated ATTEST flooding) | Default node kit ships with empty attester follow list; operators explicitly opt in; no auto-subscribe | First observed coordinated attester campaign targeting specific CIDs | Adversary publishes ATTEST events (claim=ILLEGAL) from official-looking pubkeys → hosts with default attester lists auto-refuse. Defense: defaults empty, attester reputation (cost-weighted history, temporal burst detection), attester bond option. Social/operational risk, not protocol. |
 | 15 | Payment rail diversity (LN-only dependency) | Single rail (Lightning). Accepted risk at MVP. | First LN routing disruption affecting receipt flow or pool credits | Ecash/Cashu bearer tokens for pool credits. On-chain fallback for large settlements. Fedimint integration. Custom token (long-term). No protocol change — pool credit is `sats > 0`, rail is plumbing. |
 | 16 | Event stream live mirroring | Snapshots every 100 epochs (~17 days); gap = unverified state | Second materializer or independent archiver active | SSE/WebSocket event stream from coordinator. Independent parties maintain real-time replicas. Reduces recovery gap from 17 days to minutes. Prerequisite for credible re-ignition. |
+| 17 | Session/tab implementation (streaming) | Per-block L402 (works for small files) | First video/media content uploaded, or per-block invoice latency > 500ms | Session state management (host-side). Top-up flow. Session receipt batching. PoW session variant. Adaptive bitrate mid-session. Seek-aware block selection for media playback. |
+| 18 | PoW-gated free tier | Free preview ≤16 KiB only | First public-interest content pinned with access_sats > 0 | PoW verification on gateway (per-request or per-session). Demand-scaling difficulty. Lightweight demand markers (non-receipt). Access budget deduction accounting. |
+| 19 | HTLC-based upload escrow | Materializer holds escrow (MVP) | Second independent host operator | Replace materializer escrow with HTLC conditioned on host publishing signed HostServe event. Host can only claim payment by accepting publicly. Fully trust-minimized — no escrow holder needed. |
+| 20 | Author payment proof at settlement | Settler verifies proof (MVP trust point) | Multiple competing settlers active | ReceivedV1 attestation format. Lightning preimage forwarding. Automated proof submission. Dispute resolution for missing proofs. |
 | B | Founder service replacement specs | Longevity section L1-L7 | Pre-launch documentation pass | For each service (directory, mints, aggregator, snapshots, provisioning, materializer): inputs, outputs, swap procedure. Test: "can a stranger replace it without contacting the founder?" |
 
 ---
@@ -2106,8 +2237,20 @@ Cryptographic attestation of content provenance + funding history. Only the cano
 
 ## Analogies
 
-This system is: **BitTorrent + Lightning + CDN economics + Proof-of-Work receipts**
+This system is: **PirateBay × Plex — paid bytes on demand.**
 
+BitTorrent + Lightning + CDN economics + Proof-of-Work receipts, but the unit of commerce is the **byte-second**: not files (download-to-own), not subscriptions (all-you-can-eat), but access to bytes when someone wants them, metered at the block level.
+
+| PirateBay aspect | Plex aspect | Dupenet mechanism |
+|------------------|-------------|-------------------|
+| Decentralized discovery | Library UI / media browser | Materializer (leaderboard + collections) |
+| Crowd-funded availability | Always-on media server | Bounty pools + preserve orders |
+| Magnet links (content-addressed) | Direct play / stream | CID + FileManifest + session fetch |
+| Seeders = hosts | Transcoding / variants | AssetRoot variants + paid transcoding |
+| No central point of failure | Metadata-rich experience | Materializer views (ANNOUNCE, LIST) |
+| Free-as-in-speech | Not free-as-in-beer | PoW-gated free tier (CPU cost, not sats) |
+
+Underlying primitives:
 - **BitTorrent**: Content-addressed, P2P, hosts self-select
 - **Lightning**: Fee market, nodes set prices, routing finds cheapest
 - **CDN**: Per-GB egress, competitive market, caching emerges
@@ -2115,8 +2258,10 @@ This system is: **BitTorrent + Lightning + CDN economics + Proof-of-Work receipt
 
 Novel additions (Layer A):
 - **Bounty pools per CID** as demand signal for replication
+- **Durability / access separation** — pools fund proof-of-holding (time-based); egress funded separately (L402 / PoW / sponsor)
 - **Receipt-based payouts** replace trusted verifiers with cryptographic proofs
 - **Pin contracts** turn durability into a B2B market primitive
+- **Session / tab model** — batched payment for streaming + browsing; hosts are stores with entrance fees
 - **Receipts as portable demand** — cross-platform proof of paid consumption
 - **Layer A/B split** — platform primitive (dumb blobs + paid receipts) decoupled from first-party app worldview
 
