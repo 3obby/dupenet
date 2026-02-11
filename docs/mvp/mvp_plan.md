@@ -240,6 +240,7 @@ These are `EventV1.body` schemas the reference materializer interprets. Not prot
 | 0x0A | PRESERVE | pool_key | tier, target_replicas, min_jurisdictions, duration_epochs, max_price_per_epoch, access_sats, access_pow_fallback, auto_renew | Preservation order (demand side). Sats escrowed until epoch-boundary clearing. `access_sats` funds free reads (separate from durability budget). Extends PIN_POLICY with aggregation + clearing spread. Materializer convention. |
 | 0x0B | OFFER | pool_key | replicas, regions, price_per_epoch, bond_sats, duration_epochs | Host commitment (supply side). Bonded capacity offer matched against PRESERVE orders at clearing. Materializer convention. |
 | 0x0C | UPLOAD_QUOTE | asset_root | cost_sats, review_window_epochs, included_epochs | Signed upload quote. Binding price commitment from host. Client pays to escrow; host reviews content before accepting. |
+| 0x0D | DELEGATE | agent_pubkey | budget_sats_per_epoch, allowed_kinds[], max_sats_per_event, expires_epoch | Budget-scoped authority delegation. Delegator (human) signs; agent signs events using own key. Materializer validates budget + scope + expiry. Protocol sees normal events. Revoke: DELEGATE with budget 0 for same agent_pubkey. |
 
 ### Entity Relationships
 
@@ -1111,6 +1112,8 @@ The materializer builds this graph incrementally as events arrive. Every edge is
 
 **Body edge convention**: inline `[ref:bytes32]` tokens in POST/ANNOUNCE bodies. The materializer extracts these and creates graph edges. This is a materializer convention, not protocol. Example: "The deposition at `[ref:a1b2c3...]` contradicts the flight log at `[ref:d4e5f6...]`" creates two body edges. The author's comment becomes a bridge node linking two documents.
 
+**Structured edges (machine-produced analysis)**: POST/ANNOUNCE body MAY include an `_edges` JSON array alongside freetext `[ref:bytes32]` tokens: `{"_edges": [{"ref": "hex64", "rel": "cites|extends|contradicts|corroborates|supersedes", "tier": "cite|assert", "w": 0.92}]}`. Two tiers: **citation** (`cites`, `extends` — objective, verifiable: does the referenced content exist?) and **assertion** (`contradicts`, `corroborates`, `supersedes` — subjective claim). Materializer weights assertion edges more skeptically in graph importance (e.g. dampened unless backed by sats or from agents with deep receipt portfolios). Citation edges are cheap structure; assertion edges are claims that need economic or reputational backing. Both produce identical graph vertices; the tier distinction governs materializer weighting, not protocol. Freetext `[ref:bytes32]` tokens remain the human convention. Not protocol — materializer convention, changeable.
+
 **Graph-weighted importance** (materializer-computed, display signal only):
 
 ```
@@ -1941,6 +1944,41 @@ Host (direct):
 - `GET /asset/{root}`, `GET /file/{root}`, `GET /block/{cid}` — blob layer
 - `PUT /block/{cid}`, `PUT /file/{root}`, `PUT /asset/{root}` — client-side chunking (Option 1)
 
+### Agent Interoperability (Minimum Surface)
+
+AI agents are first-class protocol participants. No agent-specific API — agents use the same `POST /event`, `GET /block` (L402), `GET /feed/funded`, `GET /content/:ref/signals` as browsers. Three additions unlock the agent economy:
+
+**1. Delegation (kind=DELEGATE, 0x0D)**: A human authorizes an agent to act within a budget.
+
+```
+DELEGATE body: {
+  budget_sats_per_epoch: u64,    // spending cap
+  allowed_kinds: [u8],           // e.g. [FUND, POST] — scope
+  max_sats_per_event: u64,       // per-action cap
+  ref_allowlist: [bytes32]?,     // optional — restrict to specific CIDs/topics/pools
+  expires_epoch: u64             // hard expiry
+}
+ref = agent_pubkey, from = human_pubkey, sig = human_sig
+```
+
+Agent signs events with its own key. Materializer validates: delegation exists, unexpired, budget not exceeded, kind allowed. Protocol sees normal events (`sats > 0 → credit pool`). Delegation is a materializer gate, not protocol. Revocation: DELEGATE with `budget_sats_per_epoch: 0`.
+
+**2. Structured body edges** (see §Reference Graph): `_edges` JSON array in POST/ANNOUNCE body. Relationship types + confidence weight. Machine-produced citation graph entries. Same graph, richer metadata. Materializer convention.
+
+**3. Receipt-as-credential**: Agents SHOULD use persistent pubkeys (not ephemeral) to accumulate verifiable consumption history. An agent's receipt portfolio — CIDs consumed, sats spent, temporal spread, host diversity — is a machine-verifiable reputation signal. Receipts prove diligence and spend, not correctness. "This agent consumed 200 legal filings across 6 months" = credible research effort. "This agent's assertions are true" = separate problem (bonded claims / ex-post scoring — post-MVP reliability overlay). Materializer exposes `GET /agent/:pubkey/profile` (same schema as author profile, populated from receipts + delegation events). Post-MVP: reliability overlay — which agents' assertion edges historically correlate with later corroboration. The demand oracle (importance index) is day-1; the reliability overlay is where defensibility and pricing power compound with temporal depth.
+
+**Agent patterns on existing endpoints**:
+
+| Step | Endpoint | Action |
+|------|----------|--------|
+| Discover | `GET /feed/funded`, `/orphans` | What to consume or analyze |
+| Consume | `GET /block/:cid` (L402) | Pay, read, receipt generated |
+| Analyze | `POST /event` kind=POST with `_edges` | Structured citations |
+| Allocate | `POST /event` kind=FUND | Fund within delegation budget |
+| Preserve | `POST /event` kind=PRESERVE | Durable availability within budget |
+
+No new endpoints. The delegation event + structured edges + persistent receipts are the entire agent surface. In an automated world, agents are the dominant receipt generators, analysis producers, and capital allocators — the protocol economics are identical; delegation scopes the authority.
+
 ---
 
 ## Success Criteria
@@ -2042,6 +2080,8 @@ Current design: client fetches all blocks from one host, failover to next on fai
 | PRESERVE_GOLD_REPLICAS | 10 | Default target replicas for Gold tier |
 | PRESERVE_SILVER_REPLICAS | 5 | Default target replicas for Silver tier |
 | PRESERVE_BRONZE_REPLICAS | 3 | Default target replicas for Bronze tier |
+| DELEGATE_MAX_BUDGET_SATS | 1,000,000 | Max per-epoch budget in a single delegation (anti-griefing) |
+| DELEGATE_MAX_DURATION_EPOCHS | 4,320 (~30 days) | Max delegation duration before renewal required |
 
 **Derived (not tunable)**:
 - PoW difficulty: `TARGET_BASE >> floor(log2(receipt_count + 1))`
