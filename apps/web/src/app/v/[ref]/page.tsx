@@ -180,8 +180,8 @@ export default async function ContentPage({
         <span title="copies">
           {"\ud83d\udcbf"}{stats.host_count}
         </span>
-        <span className="t" title="runway">
-          {"\u25f7"}~{estRunway(stats.balance, Math.max(stats.host_count, 1))}mo
+        <span className="t" title="estimated sustainability (from drain rate)">
+          {"\u25f7"} funded ~{estRunway(stats.balance, Math.max(stats.host_count, 1))}mo
         </span>
         {isPaid && hostPrice && (
           <span className="t" title="price per fetch">

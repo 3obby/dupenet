@@ -1,5 +1,6 @@
 import { getFeedFunded, getDirectory, fmtSats, shortHex } from "@/lib/api";
 import { IdentityChip } from "@/components/KeyProvider";
+import { FortifyButton } from "@/components/FortifyButton";
 
 export const revalidate = 30;
 
@@ -41,6 +42,7 @@ export default async function Leaderboard() {
                 <span className="t th-stat">{items.length} items</span>
               </th>
               <th></th>
+              <th></th>
             </tr>
           </thead>
           <tbody>
@@ -60,6 +62,9 @@ export default async function Leaderboard() {
                     <a href={`/p/${item.pool_key}`} className="t">
                       {"\ud83d\udd0d"}
                     </a>
+                  </td>
+                  <td>
+                    <FortifyButton poolRef={item.pool_key} inline />
                   </td>
                 </tr>
               );

@@ -2,12 +2,16 @@
 
 /**
  * +฿ button — fund a pool via Lightning.
+ *
+ * Opens a bottom-sheet/modal with tier presets (Gold/Silver/Bronze) and
+ * custom amount. Payment state shows QR code + auto-poll spinner.
  * On success, cycles through the 4-pack (฿ 𓀠 💿 ◷) showing impact.
  */
 
 import { useState, useEffect, useRef, useCallback } from "react";
 import { useRouter } from "next/navigation";
 import { useIdentity } from "./KeyProvider";
+import { LightningQR } from "./QRCode";
 import {
   buildFundEvent,
   getEventHash,
@@ -19,9 +23,19 @@ import {
 } from "@/lib/event-client";
 import { hasWebLN, payWithWebLN } from "@/lib/webln";
 
-const AMOUNTS = [210, 21_000, 21_000_000];
-const AMOUNT_LABELS: Record<number, string> = { 210: "210", 21000: "21k", 21000000: "21m" };
-function amtLabel(n: number): string { return AMOUNT_LABELS[n] ?? String(n); }
+/* ── Tier presets (mapped to FUND events; real PRESERVE in Sprint F) ── */
+
+interface Tier {
+  label: string;
+  sats: number;
+  desc: string;
+}
+
+const TIERS: Tier[] = [
+  { label: "Gold",   sats: 21_000_000, desc: "~10 replicas · 6+ mo" },
+  { label: "Silver", sats: 21_000,     desc: "~5 replicas · 3 mo" },
+  { label: "Bronze", sats: 210,        desc: "~3 replicas · 1 mo" },
+];
 
 // The 4-pack icons for the success cycle
 const CYCLE_ICONS = ["\u0e3f", "\ud80c\udc20", "\ud83d\udcbf", "\u25f7"];
@@ -35,8 +49,8 @@ interface ContentStats {
 type FortifyState =
   | { step: "idle" }
   | { step: "picking" }
-  | { step: "requesting" }
-  | { step: "paying"; invoice: string; paymentHash: string; event: UnsignedEvent }
+  | { step: "requesting"; sats: number }
+  | { step: "paying"; invoice: string; paymentHash: string; event: UnsignedEvent; sats: number }
   | { step: "confirming"; event: UnsignedEvent }
   | { step: "cycling"; idx: number }
   | { step: "error"; message: string };
@@ -44,9 +58,12 @@ type FortifyState =
 export function FortifyButton({
   poolRef,
   stats,
+  inline,
 }: {
   poolRef: string;
   stats?: ContentStats;
+  /** Compact mode for leaderboard rows (no modal, just link). */
+  inline?: boolean;
 }) {
   const router = useRouter();
   const { publicKeyHex, generate, getPrivateKey } = useIdentity();
@@ -85,6 +102,18 @@ export function FortifyButton({
     }, 350);
   }, [router]);
 
+  // ── Inline mode (for leaderboard rows) ──────────────────────────
+
+  if (inline) {
+    return (
+      <a href={`/v/${poolRef}#fortify`} className="link-btn" title="fortify">
+        {"+\u0e3f"}
+      </a>
+    );
+  }
+
+  // ── No key yet ──────────────────────────────────────────────────
+
   if (!publicKeyHex) {
     return (
       <button onClick={generate} className="link-btn" title="create key to fund">
@@ -93,12 +122,14 @@ export function FortifyButton({
     );
   }
 
+  // ── Payment logic ───────────────────────────────────────────────
+
   async function startFortify(sats: number) {
     if (sats <= 0 || !Number.isInteger(sats)) return;
     const pkHex = publicKeyHex;
     if (!pkHex) return;
 
-    setState({ step: "requesting" });
+    setState({ step: "requesting", sats });
 
     try {
       const unsignedEvent = buildFundEvent(poolRef, sats, pkHex);
@@ -131,6 +162,7 @@ export function FortifyButton({
           invoice: payreq.invoice,
           paymentHash: payreq.payment_hash,
           event: unsignedEvent,
+          sats,
         });
         pollRef.current = setInterval(async () => {
           try {
@@ -168,67 +200,27 @@ export function FortifyButton({
     }
   }
 
-  // ── Render ────────────────────────────────────────────────
+  // ── Render ────────────────────────────────────────────────────
 
+  // Idle: just the +฿ trigger
   if (state.step === "idle") {
     return (
-      <button onClick={() => setState({ step: "picking" })} className="link-btn">
+      <button
+        id="fortify"
+        onClick={() => setState({ step: "picking" })}
+        className="link-btn"
+      >
         {"+\u0e3f"}
       </button>
     );
   }
 
-  if (state.step === "picking") {
-    return (
-      <span className="fortify-row">
-        {AMOUNTS.map((a) => (
-          <button key={a} onClick={() => startFortify(a)} className="link-btn">
-            {amtLabel(a)}
-          </button>
-        ))}{" "}
-        <input
-          type="number"
-          min="1"
-          placeholder="_"
-          value={custom}
-          onChange={(e) => setCustom(e.target.value)}
-          className="inline-input"
-          onKeyDown={(e) => { if (e.key === "Enter") startFortify(parseInt(custom, 10)); }}
-        />
-        <button onClick={() => startFortify(parseInt(custom, 10))} className="link-btn">
-          {"\u0e3f"}
-        </button>
-        {" "}
-        <button onClick={reset} className="link-btn t">x</button>
-      </span>
-    );
-  }
-
-  if (state.step === "requesting" || state.step === "confirming") {
-    return <span className="t">{"\u0e3f"}...</span>;
-  }
-
+  // Cycling: success animation
   if (state.step === "cycling") {
     return <span className="cycle-icon">{CYCLE_ICONS[state.idx]}</span>;
   }
 
-  if (state.step === "paying") {
-    const shortInv = state.invoice.slice(0, 36) + "...";
-    return (
-      <div className="invoice-box">
-        <a href={`lightning:${state.invoice}`} className="invoice-link">{shortInv}</a>
-        {" "}
-        <button onClick={() => navigator.clipboard.writeText(state.invoice).catch(() => {})} className="link-btn">
-          copy
-        </button>
-        <br />
-        <span className="t">{"\u0e3f"}...</span>
-        {" "}
-        <button onClick={reset} className="link-btn t">x</button>
-      </div>
-    );
-  }
-
+  // Error: message + retry
   if (state.step === "error") {
     return (
       <span>
@@ -241,5 +233,122 @@ export function FortifyButton({
     );
   }
 
-  return null;
+  // ── Bottom-sheet modal (picking / requesting / paying / confirming) ──
+
+  return (
+    <>
+      <button onClick={reset} className="link-btn">
+        {"+\u0e3f"}
+      </button>
+
+      {/* Backdrop */}
+      <div className="fortify-backdrop" onClick={reset} />
+
+      {/* Bottom sheet */}
+      <div className="fortify-sheet">
+        <div className="fortify-sheet-header">
+          <b>{"+\u0e3f"} Fortify</b>
+          <button onClick={reset} className="link-btn t">
+            {"×"}
+          </button>
+        </div>
+
+        {state.step === "picking" && (
+          <div className="fortify-sheet-body">
+            {/* Tier presets */}
+            {TIERS.map((tier) => (
+              <button
+                key={tier.label}
+                onClick={() => startFortify(tier.sats)}
+                className="fortify-tier"
+              >
+                <span className="fortify-tier-label">{tier.label}</span>
+                <span className="fortify-tier-sats">{"\u0e3f"}{fmtCompact(tier.sats)}</span>
+                <span className="fortify-tier-desc t">{tier.desc}</span>
+              </button>
+            ))}
+
+            {/* Custom amount */}
+            <div className="fortify-custom">
+              <input
+                type="number"
+                min="1"
+                placeholder="custom sats"
+                value={custom}
+                onChange={(e) => setCustom(e.target.value)}
+                className="inline-input"
+                style={{ width: "100px" }}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter") {
+                    const v = parseInt(custom, 10);
+                    if (v > 0) startFortify(v);
+                  }
+                }}
+              />
+              <button
+                onClick={() => {
+                  const v = parseInt(custom, 10);
+                  if (v > 0) startFortify(v);
+                }}
+                className="link-btn"
+              >
+                {"\u0e3f"} send
+              </button>
+            </div>
+
+            <div className="fortify-hint t">
+              no wallet?{" "}
+              <a href="/wallet-guide" target="_blank">get one →</a>
+            </div>
+          </div>
+        )}
+
+        {state.step === "requesting" && (
+          <div className="fortify-sheet-body fortify-center">
+            <div className="fortify-spinner" />
+            <span className="t">requesting invoice for {"\u0e3f"}{fmtCompact(state.sats)}...</span>
+          </div>
+        )}
+
+        {state.step === "confirming" && (
+          <div className="fortify-sheet-body fortify-center">
+            <div className="fortify-spinner" />
+            <span className="t">confirming...</span>
+          </div>
+        )}
+
+        {state.step === "paying" && (
+          <div className="fortify-sheet-body fortify-center">
+            <LightningQR invoice={state.invoice} size={200} />
+            <a
+              href={`lightning:${state.invoice}`}
+              className="link-btn"
+              style={{ wordBreak: "break-all", fontSize: "11px" }}
+            >
+              {state.invoice.slice(0, 30)}...
+            </a>
+            <button
+              onClick={() => navigator.clipboard.writeText(state.invoice).catch(() => {})}
+              className="link-btn t"
+              style={{ fontSize: "11px" }}
+            >
+              copy invoice
+            </button>
+            <div className="fortify-poll-status">
+              <div className="fortify-spinner" />
+              <span className="t">
+                waiting for payment {"\u0e3f"}{fmtCompact(state.sats)}...
+              </span>
+            </div>
+          </div>
+        )}
+      </div>
+    </>
+  );
+}
+
+function fmtCompact(n: number): string {
+  if (n < 1000) return String(n);
+  if (n < 1_000_000) return `${(n / 1000).toFixed(n % 1000 === 0 ? 0 : 1)}k`;
+  return `${(n / 1_000_000).toFixed(n % 1_000_000 === 0 ? 0 : 1)}m`;
 }

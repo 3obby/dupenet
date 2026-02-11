@@ -89,7 +89,7 @@ ${items.length === 0 ? '<span class="t">-</span>' : `<table>
   return new NextResponse(html, {
     headers: {
       "Content-Type": "text/html; charset=utf-8",
-      "Cache-Control": "public, max-age=30",
+      "Cache-Control": "public, max-age=30, stale-while-revalidate=300",
     },
   });
 }

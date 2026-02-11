@@ -127,7 +127,7 @@ hr{border:0;border-top:1px solid #ccc;margin:4px 0}
   return new NextResponse(html, {
     headers: {
       "Content-Type": "text/html; charset=utf-8",
-      "Cache-Control": "public, max-age=30",
+      "Cache-Control": "public, max-age=30, stale-while-revalidate=300",
     },
   });
 }
