@@ -2,7 +2,7 @@
 
 **Purpose**: Durable sovereign content via economic incentives. Paying attention mechanically increases availability. Build the pool, the receipt, and the leaderboard. Borrow everything else from Nostr.
 
-**Predecessor**: `mvp_plan.md` (2,309 lines). This document preserves all economics, all novel primitives, all product surfaces. It replaces custom infrastructure with Nostr/Blossom/Cashu and reframes the architecture around three NIPs + one product.
+**Predecessor**: `mvp_plan.md` (2,309 lines). This document preserves all economics, all novel primitives, all product surfaces. It replaces custom infrastructure with Nostr/Blossom/Cashu and reframes the architecture around core NIPs + one product.
 
 ---
 
@@ -52,6 +52,9 @@ Everything else is borrowed infrastructure.
 | **NIP-POOL** | Pool credit events (bind sats to content hash) | Custom EventV1 ingestion + pool accounting |
 | **NIP-RECEIPT** | Proof of service (Blossom server addon) | Custom L402 gate + receipt submission |
 | **NIP-SETTLE** | Epoch settlement (deterministic from public events) | Custom coordinator settlement |
+| **NIP-PRESERVE** | Structured preservation bid (demand side, escrowed) | Same product |
+| **NIP-OFFER** | Host supply commitment (supply side, bonded) | Same product |
+| **NIP-CLEARING** | Epoch-boundary clearing result (published by clearinghouse) | Same product |
 | **Importance index** | Leaderboard + API + widget | Same product, different plumbing |
 | **Clearinghouse** | Preserve order matching | Same product |
 
@@ -75,7 +78,7 @@ Dupenet solves Nostr's unsolved problems:
 
 ---
 
-## The Three NIPs
+## Core NIPs
 
 ### NIP-POOL — Pool Credit Event
 
@@ -121,9 +124,13 @@ tags:
   ["epoch", "<epoch_number>"]          # settlement period
   ["response_hash", "<hash>"]          # proves correct bytes
   ["pow", "<nonce>", "<pow_hash>"]     # anti-sybil
+  ["index", "<index_pubkey>"]          # which index drove this consumption (optional)
+  ["index_proof", "<signed_token>"]     # Sign_index_sk(index_pubkey || nonce || epoch)
 content: ""
 sig: client signature
 ```
+
+**Index attribution**: Optional. If present, settler verifies `index_proof` (Ed25519 verify against index pubkey, token epoch valid). Only then does the receipt count toward that index's royalty share. Unattributed receipts forfeit index royalty (goes to dev fund).
 
 **Verification**: O(1), permissionless. `Ed25519_verify(receipt_token, mint_pubkey)` + `pow_hash < TARGET` + `sig check`. No LN state, no network calls.
 
@@ -153,15 +160,77 @@ tags:
   ["receipt_merkle_root", "<root>"]
   ["receipt_count", "<n>"]
   ["unique_clients", "<n>"]
+  ["index_payout", "<index_pubkey>", "<sats>", "<unique_clients>", "<receipt_count>"]  # per-index attribution
 content: JSON settlement details
 sig: settler signature
 ```
+
+**Index attribution accounting**: For each index with valid `index_proof` receipts: `payout(index_i) ∝ U_i × log2(1 + R_i)` — unique attributed clients dominant, volume sublinear. Routed from ROYALTY_SPLIT_INDEX (10%).
 
 **Properties**:
 - Deterministic: same inputs → same outputs. Anyone can verify.
 - Multiple settlers can run simultaneously and cross-verify.
 - Settlement events are signed, timestamped, publicly auditable.
 - **This is L5 (permissionless aggregation) from day 1**, not post-MVP.
+
+### NIP-PRESERVE — Structured Preservation Bid (Demand Side)
+
+Structured bid for replication outcome. Distinct from NIP-POOL: escrowed, refundable on cancellation, cleared at epoch boundary.
+
+```
+kind: NIP_PRESERVE_KIND
+pubkey: funder
+tags:
+  ["r", "<sha256>"]                      # content hash
+  ["tier", "gold|silver|bronze|custom"]  # preset or custom
+  ["replicas", "<n>"]                    # target replica count
+  ["jurisdictions", "<n>"]               # minimum jurisdiction diversity
+  ["duration", "<epochs>"]                # how long
+  ["max_price", "<sats_per_replica_per_epoch>"]
+  ["escrow_proof", "<cashu_token|payment_hash>"]  # sats locked
+content: optional JSON (auto_renew, access_sats)
+sig: funder signature
+```
+
+Tiers: Gold (10 replicas, 3 jurisdictions, 6mo) / Silver / Bronze / Custom.
+
+### NIP-OFFER — Host Supply Commitment (Supply Side)
+
+Host commits bonded capacity. Earns clearing price (typically higher than residual pool drain). Two-tier host market: commodity (spot) vs committed (bonded).
+
+```
+kind: NIP_OFFER_KIND
+pubkey: host
+tags:
+  ["r", "<sha256>"]                      # content hash (or "*" for general capacity)
+  ["replicas", "<n>"]                    # capacity offered
+  ["regions", "<region_list>"]           # where
+  ["price", "<sats_per_replica_per_epoch>"]
+  ["bond", "<sats>"]                     # forfeited on failure
+  ["duration", "<epochs>"]
+  ["bond_proof", "<cashu_token|payment_hash>"]
+sig: host signature
+```
+
+### NIP-CLEARING — Epoch Boundary Clearing Result
+
+Published by clearinghouse at epoch boundary. Deterministic, auditable — anyone can verify matching from public PRESERVE + OFFER events.
+
+```
+kind: NIP_CLEARING_KIND
+pubkey: clearinghouse
+tags:
+  ["epoch", "<epoch_number>"]
+  ["r", "<sha256>"]                      # content hash
+  ["clearing_price", "<sats_per_replica_per_epoch>"]
+  ["matched_replicas", "<n>"]
+  ["spread", "<sats>"]                   # 3% of matched value
+  ["pool_credit", "<sats>"]              # net credited to pool
+  ["preserve_ids", "<event_id_list>"]
+  ["offer_ids", "<event_id_list>"]
+content: JSON clearing details
+sig: clearinghouse signature
+```
 
 ---
 
@@ -304,7 +373,7 @@ Rate halves every ~10× volume. Deterministic. Auditable.
 |-----------|-------|-----------|
 | Founder | 60% | Protocol creator, data moat maintainer |
 | Settler operator | 20% | Incentivizes peer settlers |
-| Index operator (that drove consumption) | 10% | Incentivizes competing indexes |
+| Index operator | 10% | Routed by attributed unique clients per NIP-SETTLE; incentivizes competing indexes |
 | Development fund | 10% | Ecosystem maintenance |
 
 ### Value Capture (Toll Booths)
@@ -321,6 +390,8 @@ Rate halves every ~10× volume. Deterministic. Auditable.
 | Institutional API | Product | $5K-$1M/year | Index operator |
 | Preserve clearing | Product | 3%, non-tapering | Clearinghouse |
 | Auto-bid royalty | Protocol (indirect) | AUTO_BID_PCT of egress → pool credit (subject to credit royalty) | Founder |
+
+**Clearing spread defensibility**: Non-tapering, compounds with volume, naturally monopolistic (liquidity begets liquidity). Orderbook doesn't migrate with a fork. Structurally the most defensible revenue stream.
 
 ---
 
@@ -377,13 +448,54 @@ At scale, agents are the dominant receipt generators, analysis producers, and ca
 
 ---
 
+## Human Interface (Minimal)
+
+**Principle:** The product is the economic visualization plus one action (Fortify). Content lives on Blossom. Discussion lives on Nostr. Identity lives in NIP-07. Borrow everything else.
+
+### Core Surfaces
+
+| Surface | Purpose | Phase |
+|---------|---------|-------|
+| Leaderboard feed (mobile-first) | Ranked list, expandable cards, Fortify inline | MVP |
+| Content detail page | Blossom embed + instrument cluster + discussion + Fortify | MVP |
+| Widget (Web Component) | Embeddable anywhere, mobile-responsive | MVP |
+| Ref resolver | Paste URL/hash/file → resolve to importance data | MVP |
+| Citation list (flat) | "Cited by" / "Cites" lists (not full graph viz) | MVP |
+| Graph visualization | Full animated citation network | Phase 1.5 |
+
+### UX Constraints
+
+**Paid content:** Content page stays canonical. App fetches L402 invoice from Blossom server, displays in-page (or modal), user pays, bytes arrive, render inline. No redirect to host.
+
+**Identity:** Default NIP-07 (or Amber on mobile). Ephemeral key allowed for first Fortify to reduce friction. Immediately offer "Claim this funding" — one signature linking ephemeral event to persistent pubkey. Preserves funder diversity metrics and portfolio.
+
+**Comment ordering:** Baseline = recency + author trust (receipt portfolio as lightweight signal). Boost = sats on comment event. Don't weight by sats alone — prevents paid reply spam. Body edges (`[ref:bytes32]`) create citation structure regardless of sats.
+
+**Ref resolver (canonicalization):** Must answer "what is the ref?" Inputs: Blossom URL (extract SHA256), direct file (hash in browser via Web Crypto API), Nostr event (extract `r` tag). Prominent input on leaderboard: paste URL/hash/drop file → resolve → show importance or "Not indexed — be first to Fortify."
+
+**"Not served" / "Not indexed" states:** First-class. Show pool balance, target bounty to attract first host, who refused (optional). One button: Fortify to summon hosts. Censorship-as-market made visible.
+
+**"Not indexed" state:** Content exists on Blossom but no ANNOUNCE. Ref resolver encounters this → "Be the first to index" → one-tap ANNOUNCE + optional Fortify.
+
+**Widget:** Ship on CDN first. Dogfood (Blossom-hosted widget) later when reliability proven.
+
+**Mobile:** Target global mobile users. Fortify = deep link (`lightning:`) for mobile wallets; QR for cross-device. Leaderboard + expandable cards = primary flow; content detail = deep-dive. Offline: cache last ranking, queue Fortify events for reconnect, show instrument cluster even when content embed unavailable.
+
+**OG cards / social preview:** Share `/v/{hash}` → rich preview with importance data, funder count, sustainability. The link IS the pitch.
+
+### Distribution (Interface Everywhere)
+
+Importance scores published as Nostr events → any Nostr client can consume. Widget embeddable on any page. OG cards for social shares. Importance API for agents. No browser extension at MVP (mobile-first target).
+
+---
+
 ## MVP Build Order
 
 ### Phase 1: Prior Work (Complete)
 
 File layer, L402, node kit, receipt SDK, pin contracts. See `progress_overview.txt`. Partially reusable — receipt cryptography, physics library, chunking logic carry forward. Custom coordinator/gateway infrastructure is superseded by Nostr-native design.
 
-### Phase 2: Protocol (The Three NIPs)
+### Phase 2: Protocol (Core NIPs)
 
 **Step 1: NIP-POOL spec + reference settler**
 - Define pool credit event kind
@@ -409,21 +521,21 @@ File layer, L402, node kit, receipt SDK, pin contracts. See `progress_overview.t
 **Step 4: Leaderboard + storefront**
 
 Core surface:
-- Global leaderboard: `/` — content ranked by importance triangle (commitment × demand × centrality)
-- Content page: `/v/<ref>` — inline render + instrument cluster + Fortify + discussion
-  - Open content: full render, "free to read, pay to preserve"
-  - Paid content: free preview + price tag + Buy button (cheapest Blossom server)
-- Instrument cluster: funding counter, funder count, demand, replicas, sustainability ratio, citations
-- Fortify button: Lightning payment → NIP-POOL event → counter increments in <60s
+- Global leaderboard: `/` — content ranked by importance triangle (commitment × demand × centrality). Mobile-first: scrollable feed, expandable cards, Fortify inline.
+- Content page: `/v/<ref>` — Blossom embed (left) + instrument cluster (right). Paid content: fetch L402 invoice in-page, user pays, render inline. No redirect.
+- Ref resolver: paste URL/hash/drop file → resolve to importance. Handles "Not indexed" (no ANNOUNCE yet) and "Not served" (pool exists, zero hosts).
+- Instrument cluster: funding counter, funder count, demand, replicas, sustainability ratio, citations, active preserve backers, aggregate tier, supply curve, sustainability projection
+- **Fortify CTA** (three options): (1) **Preserve** (primary) — tier selector Gold/Silver/Bronze → NIP-PRESERVE with escrowed sats. (2) **Fortify** (secondary) — raw NIP-POOL, irrevocable, immediate. (3) **Fund** (power-user) — freeform sats.
+- Fortify button: Lightning payment → NIP-POOL event → counter increments in <60s. Mobile: deep link (`lightning:`). Ephemeral key allowed; prompt "Claim this funding" (link to NIP-07).
 - Preserve tiers: Gold (10 replicas, 3 jurisdictions, 6mo) / Silver / Bronze
-- Comment box: Nostr event with ref=content hash (PoW for free; sats to boost)
-- Citation rendering: `[ref:bytes32]` tokens rendered as clickable links
-- Thread view, collection view, cluster view (graph neighborhood)
+- Discussion: Nostr events with ref=content hash. Order: recency + author trust + sats boost. `[ref:bytes32]` rendered as citation links.
+- Citation list: "Cited by" / "Cites" (flat lists). Full graph viz deferred to Phase 1.5.
 - Orphan view: funded but under-analyzed content ("needs analysis" callouts)
+- OG cards: share `/v/{hash}` → rich preview with importance data, funder count, sustainability
 
 Embeddable widget:
 - Compact leaderboard + Fortify button for external sites
-- Inline bootstrap (~1KB), content-addressed JS bundle
+- Web Component, mobile-responsive. Ship on CDN first (Blossom-hosted later)
 - Multi-host resolution, localStorage caching, self-updating
 - Ship before media outreach — every embed is a distribution + funding channel
 
@@ -444,10 +556,17 @@ Bitcoin integrity anchor:
 - Free tier for Nostr clients (drives adoption)
 - Paid tier for institutional consumers and agent platforms
 
-**Step 6: Clearinghouse**
-- Preserve order matching (demand ↔ host supply)
-- Multi-sig operation among 2-3 trusted peers
-- Clearing spread: 3% of matched value
+**Step 6: Clearinghouse** (parallel with Step 4, not after Step 5)
+
+Matching engine: subscribes to NIP-PRESERVE + NIP-OFFER events, aggregates demand per CID, matches at epoch boundary, publishes NIP-CLEARING. Settler treats clearing events as pool credits (minus spread). 3% CLEARING_SPREAD_PCT on matched value.
+
+- **Escrow**: MVP trust-based (clearinghouse holds sats via Lightning address). Post-MVP: Cashu ecash escrow.
+- **Bid aggregation display**: preserve backers count, aggregate tier, supply curve, sustainability projection in instrument cluster.
+- **Two-tier host market**: commodity (spot, pool drain only) vs committed (bonded OFFER, earns clearing price).
+- **MVP simplification**: No bond enforcement (host fails → preserve degrades to best-effort spot). No multi-sig — founder-operated. Add when second operator joins.
+
+**Phase 1.5:**
+- Graph visualization: full animated citation network (deferred until enough edges justify it)
 
 ### Parallelism
 
@@ -458,9 +577,9 @@ Phase 2 (protocol):
           [3 NIP-SETTLE] ────────►
 
 Phase 3 (product — parallel with Phase 2):
-               [4 Leaderboard + storefront] ──────────────────►
-                    [5 Importance API] ──────────►
-                         [6 Clearinghouse] ────────►
+  [4 Leaderboard + storefront] ──────────────────►
+  [6 Clearinghouse (basic)] ──────────►          # parallel with 4
+       [5 Importance API] ──────────►
 ```
 
 ---
@@ -582,7 +701,7 @@ MVP content (documents, images, text <100 MB) uses Blossom whole-file storage. `
 | CLEARING_SPREAD_PCT | 0.03 (3%) | Clearinghouse toll |
 | ROYALTY_SPLIT_FOUNDER | 0.60 | 60% to founder |
 | ROYALTY_SPLIT_SETTLER | 0.20 | 20% to settler operator |
-| ROYALTY_SPLIT_INDEX | 0.10 | 10% to index that drove consumption |
+| ROYALTY_SPLIT_INDEX | 0.10 | 10% routed by attributed unique clients per NIP-SETTLE |
 | ROYALTY_SPLIT_DEV | 0.10 | 10% to development fund |
 
 Full constant table from `mvp_plan.md` §Constants carries forward for deferred features (sessions, PoW free tier, preserve tiers, etc.).
